@@ -1,7 +1,15 @@
 """Genesis version and private-hook compatibility checks.
 
-Genesis 1.3.3 is both the minimum and the reference pinned physics baseline for
+Genesis 1.4.0 is both the minimum and the reference pinned physics baseline for
 the contact-v1 pick-place campaign (local and training server aligned).
+
+Migration from 1.3.3 to 1.4.0:
+- RigidEntity.forward_kinematics() was removed; use get_links_pos/get_links_quat
+  after set_qpos instead, or rely on IK's internal FK.
+- RigidEntity.set_links_inertial_mass() was renamed to set_links_mass().
+- IK scratch fields (_IK_qpos_orig etc.) are now allocated lazily inside the
+  solver; the ensure_ik_scratch() helper is retained for API compatibility but
+  is a no-op on 1.4.0+.
 """
 
 from __future__ import annotations
@@ -17,8 +25,8 @@ import warnings
 from packaging.version import InvalidVersion, Version
 
 
-MIN_GENESIS_VERSION = Version("1.3.3")
-VALIDATED_GENESIS_VERSION = Version("1.3.3")  # reference / pinned baseline alias
+MIN_GENESIS_VERSION = Version("1.4.0")
+VALIDATED_GENESIS_VERSION = Version("1.4.0")  # reference / pinned baseline alias
 
 _WARNING_LOCK = threading.Lock()
 _WARNED_UNVALIDATED = False
@@ -116,14 +124,15 @@ def require_genesis_runtime(gs_module: ModuleType | Any | None = None) -> Any:
         from genesis.engine.entities.rigid_entity.rigid_entity import RigidEntity
     except ImportError as exc:
         raise GenesisCompatibilityError("Genesis rigid-entity kinematics API is unavailable.") from exc
-    forward = _require_callable(RigidEntity, "forward_kinematics", "forward kinematics")
     inverse = _require_callable(RigidEntity, "inverse_kinematics", "inverse kinematics")
-    _require_parameters(forward, {"qpos"}, "RigidEntity.forward_kinematics")
     _require_parameters(
         inverse,
         {"link", "pos", "quat", "init_qpos", "dofs_idx_local", "damping"},
         "RigidEntity.inverse_kinematics",
     )
+    _require_callable(RigidEntity, "get_links_pos", "link position accessor")
+    _require_callable(RigidEntity, "get_links_quat", "link orientation accessor")
+    _require_callable(RigidEntity, "set_links_mass", "link mass setter")
     return gs_module
 
 
@@ -208,37 +217,10 @@ def load_deferred_viewer_api(gs_module: Any) -> DeferredViewerAPI:
 
 
 def ensure_ik_scratch(robot: Any, *, gs_module: Any | None = None, qd_module: Any | None = None) -> None:
-    """Allocate the private FK scratch field required by the validated IK hook."""
+    """No-op retained for API compatibility.
 
+    Genesis 1.4.0 allocates IK scratch fields lazily inside the solver when
+    inverse_kinematics is first called. Manual pre-allocation is no longer
+    required, so this function now does nothing beyond a version check.
+    """
     require_genesis_version()
-    if getattr(robot, "_IK_qpos_orig", None) is not None:
-        return
-    n_qs = getattr(robot, "n_qs", None)
-    if not isinstance(n_qs, int) or n_qs < 0:
-        raise GenesisCompatibilityError("Genesis kinematics entity has no valid n_qs value.")
-    if n_qs == 0:
-        return
-    solver = getattr(robot, "_solver", None)
-    batch_size = getattr(solver, "_B", None)
-    if not isinstance(batch_size, int) or batch_size < 1:
-        raise GenesisCompatibilityError("Genesis kinematics scratch allocation requires robot._solver._B.")
-    if gs_module is None:
-        try:
-            import genesis as gs_module
-        except ImportError as exc:
-            raise GenesisCompatibilityError("The genesis package cannot be imported for kinematics.") from exc
-    if qd_module is None:
-        try:
-            import quadrants as qd_module
-        except ImportError as exc:
-            raise GenesisCompatibilityError(
-                "Quadrants is unavailable for Genesis kinematics scratch allocation."
-            ) from exc
-    qd_float = getattr(gs_module, "qd_float", None)
-    field = getattr(qd_module, "field", None)
-    if qd_float is None or not callable(field):
-        raise GenesisCompatibilityError("Genesis/Quadrants kinematics scratch hooks are unavailable.")
-    try:
-        robot._IK_qpos_orig = field(dtype=qd_float, shape=(n_qs, batch_size))
-    except Exception as exc:
-        raise GenesisCompatibilityError("Failed to allocate Genesis kinematics scratch storage.") from exc

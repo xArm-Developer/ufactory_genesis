@@ -6,7 +6,6 @@ import argparse
 import math
 
 import numpy as np
-import torch
 
 import genesis as gs
 from ufactory.kinematics.calibration import prepare_robot_model_for_verification
@@ -68,11 +67,11 @@ def run_tests(profile_key: str, urdf_path: str, vis: bool, *, backend: str = "gp
 
     ee_link_name = resolve_entity_name(robot, ee, "link")
     ee_link = next(l for l in robot.links if resolve_entity_name(robot, l.name, "link") == ee_link_name)
-    q_t = torch.tensor(q, dtype=torch.float32, device=gs.device)
     ensure_ik_scratch(robot, gs_module=gs)
-    links_pos, _ = robot.forward_kinematics(qpos=q_t)
+    robot.set_qpos(q.astype(np.float32))
     idx = int(ee_link.idx_local)
-    fk_pos = links_pos[idx].cpu().numpy() if links_pos.ndim == 2 else links_pos[0, idx].cpu().numpy()
+    links_pos = robot.get_links_pos(links_idx_local=[idx])
+    fk_pos = links_pos[0].cpu().numpy() if links_pos.ndim == 2 else links_pos[0, 0].cpu().numpy()
     ee_pos = ee_link.get_pos()
     if hasattr(ee_pos, "cpu"):
         ee_pos = ee_pos.cpu().numpy()

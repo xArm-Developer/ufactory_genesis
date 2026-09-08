@@ -411,6 +411,6 @@ def build_packaging_scene(
 def finalize_packaging_block(block, layout: PackagingLayout) -> None:
     """Apply post-build contact and inertial values for deferred scene builds."""
     block.set_friction(float(OBJ_FRICTION_MU))
-    block.set_links_inertial_mass(
+    block.set_links_mass(
         torch.tensor([layout.obj_mass_kg], device=gs.device, dtype=gs.tc_float),
     )

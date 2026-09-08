@@ -55,7 +55,7 @@ real = [
     "coal==3.0.3",
 ]
 sim = [
-    "genesis-world>=1.3.3",
+    "genesis-world>=1.4.0",
     "packaging>=24",
     "torch==2.10.0",
 ]

@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/python-3.12%20%7C%203.13-blue" alt="Python">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/version-0.2.13-orange" alt="Version">
-  <img src="https://img.shields.io/badge/genesis-1.3.3-lightgrey" alt="Genesis">
+  <img src="https://img.shields.io/badge/genesis-1.4.0-lightgrey" alt="Genesis">
   <a href="https://github.com/DanielWang123321/ufactory_genesis/actions/workflows/ci.yml"><img src="https://github.com/DanielWang123321/ufactory_genesis/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 </p>
 
@@ -16,7 +16,7 @@ UFACTORY robot models and Genesis simulation utilities for visualization, kinema
 
 ## Supported scope
 
-- Python 3.12/3.13; minimum and validated Genesis World baseline: 1.3.3.
+- Python 3.12/3.13; minimum and validated Genesis World baseline: 1.4.0.
 - Source checkout with editable install only; wheels, sdists, and remote asset downloads are unsupported.
 - Visualization, calibrated FK/IK, contact simulation, dry-run, controller simulation, and guarded real execution.
 - Real packaging is enabled only for xArm6 + Gripper G2 and Lite6 + Lite6 Gripper.

@@ -84,14 +84,20 @@ def build_genesis_robot(urdf_path: str, *, backend: str = "cpu", show_viewer: bo
 
 
 def genesis_fk(robot, q: np.ndarray, ee_link_idx: int) -> tuple[np.ndarray, np.ndarray]:
+    """Compute forward kinematics for a given configuration.
+
+    Genesis 1.4.0 removed RigidEntity.forward_kinematics(); use set_qpos and
+    then get_links_pos/get_links_quat on the link objects.
+    """
     import genesis as gs
 
     ensure_ik_scratch(robot, gs_module=gs)
-    q_t = torch.tensor(q, dtype=torch.float32, device=gs.device)
-    links_pos, links_quat = robot.forward_kinematics(qpos=q_t)
+    robot.set_qpos(q.astype(np.float32))
+    links_pos = robot.get_links_pos(links_idx_local=[ee_link_idx])
+    links_quat = robot.get_links_quat(links_idx_local=[ee_link_idx])
     if links_pos.ndim == 2:
-        return links_pos[ee_link_idx].cpu().numpy(), links_quat[ee_link_idx].cpu().numpy()
-    return links_pos[0, ee_link_idx].cpu().numpy(), links_quat[0, ee_link_idx].cpu().numpy()
+        return links_pos[0].cpu().numpy(), links_quat[0].cpu().numpy()
+    return links_pos[0, 0].cpu().numpy(), links_quat[0, 0].cpu().numpy()
 
 
 def _connect_sdk(ip: str):

@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/python-3.12%20%7C%203.13-blue" alt="Python">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/version-0.2.13-orange" alt="Version">
-  <img src="https://img.shields.io/badge/genesis-1.3.3-lightgrey" alt="Genesis">
+  <img src="https://img.shields.io/badge/genesis-1.4.0-lightgrey" alt="Genesis">
   <a href="https://github.com/DanielWang123321/ufactory_genesis/actions/workflows/ci.yml"><img src="https://github.com/DanielWang123321/ufactory_genesis/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 </p>
 
@@ -16,7 +16,7 @@ UFACTORY 机械臂的 Genesis 模型与仿真工具，覆盖可视化、运动�
 
 ## 支持范围
 
-- Python 3.12/3.13；Genesis World 最低且已验证的基线为 1.3.3。
+- Python 3.12/3.13；Genesis World 最低且已验证的基线为 1.4.0。
 - 仅支持克隆源码后的可编辑安装；不支持 wheel、sdist 和远程资产下载。
 - 支持可视化、校准后的正向/逆向运动学（FK/IK）、接触仿真、离线预检、控制器仿真和经过安全检查的真机执行。
 - 真机装箱只启用 xArm6 + Gripper G2 和 Lite6 + Lite6 Gripper。

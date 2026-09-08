@@ -498,7 +498,7 @@ class XArm6PickPlaceEnv:
         self.obj.set_friction(float(OBJ_FRICTION))
         self.left_finger_link.set_friction(float(FINGER_FRICTION))
         self.right_finger_link.set_friction(float(FINGER_FRICTION))
-        self.obj.set_links_inertial_mass(
+        self.obj.set_links_mass(
             torch.tensor([self.obj_mass_kg], device=self.device, dtype=gs.tc_float),
         )
         self.collision_monitor_links = [

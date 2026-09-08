@@ -465,7 +465,7 @@ def build_scene(
     obj.set_friction(float(OBJ_FRICTION))
     left_finger.set_friction(float(FINGER_FRICTION))
     right_finger.set_friction(float(FINGER_FRICTION))
-    obj.set_links_inertial_mass(
+    obj.set_links_mass(
         torch.tensor([obj_mass_kg], device=gs.device, dtype=gs.tc_float),
     )
 

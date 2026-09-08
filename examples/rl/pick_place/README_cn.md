@@ -7,7 +7,7 @@ RL 真机部署。
 
 ## 参考环境与工件状态
 
-参考环境为 Linux、NVIDIA GPU、Python 3.12/3.13、Genesis World 1.3.3、
+参考环境为 Linux、NVIDIA GPU、Python 3.12/3.13、Genesis World 1.4.0、
 Quadrants 1.3.0、PyTorch 2.10 和 RSL-RL 5.4.2；仓库锁文件是唯一参考：
 
 ```bash
@@ -132,3 +132,7 @@ python -m examples.rl.pick_place.evaluate \
 （完整与质量成功 512/512）。噪声检查的最终 XY 误差、夹起前拖动、松爪后漂移
 P99 分别为 0.93、0.35、0.07 mm；动作裁剪、IK 失败、IK 跳变拒绝和松爪后再接触
 均为零。机器可读证据见 `pretrained/evaluation_summary.json`。
+
+**Genesis 1.4.0 迁移说明：** 内置策略在 Genesis 1.3.3 下训练。迁移到 1.4.0 后，
+由于上游求解器变更（IK 延迟分配、质量 API 重命名等），物理行为可能有所不同。
+在 1.4.0 上使用前**必须重新验证或重新训练**。此次迁移未执行 GPU 仿真或策略评估。

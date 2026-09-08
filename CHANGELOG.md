@@ -5,6 +5,22 @@ All notable changes to genesis-ufactory will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING:** Raised the minimum and validated Genesis World baseline from **1.3.3 to 1.4.0**. The compatibility gate and all version pins now target 1.4.0.
+- **BREAKING:** Adapted to Genesis 1.4.0 API changes:
+  - `RigidEntity.forward_kinematics()` was removed upstream. Kinematics queries now use `set_qpos()` followed by `get_links_pos()` / `get_links_quat()`.
+  - `RigidEntity.set_links_inertial_mass()` was renamed to `set_links_mass()`. All call sites updated.
+  - IK scratch fields (`_IK_qpos_orig` etc.) are now allocated lazily inside the solver; `ensure_ik_scratch()` is retained as a no-op for API compatibility.
+- The compatibility check in `require_genesis_runtime()` no longer validates `forward_kinematics`; it validates `get_links_pos`, `get_links_quat`, and `set_links_mass` instead.
+
+### Notes
+
+- **GPU simulation and RL policy revalidation were not performed.** The bundled `model_299_g2stable.pt` policy was trained under the `g2_stable_v1_3_3` contact profile on Genesis 1.3.3. It must be revalidated or retrained before its v0.2.13 evaluation results can be trusted on Genesis 1.4.0. Physics behavior may differ due to upstream solver changes.
+- The following fast checks pass without Genesis/GPU: `ruff check`, `mypy` (domain subset), and `pytest` excluding `gpu`/`slow`/`integration`/`display`/`hardware` markers. Genesis-dependent compatibility tests require a simulation-capable environment.
+
 ## [0.2.13] — 2026-08-25
 
 ### Added

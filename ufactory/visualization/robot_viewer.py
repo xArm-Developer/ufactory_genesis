@@ -5,7 +5,6 @@ from __future__ import annotations
 import time
 
 import numpy as np
-import torch
 
 import genesis as gs
 from ufactory.grippers.bio_g2 import BioGripperG2
@@ -129,13 +128,18 @@ def _link_world_positions(robot, link_names: tuple[str, ...]) -> dict[str, list[
 
 
 def _fk_link_pos(robot, ee_link, qpos_np: np.ndarray) -> np.ndarray:
+    """Compute the end-effector link position via Genesis FK.
+
+    Genesis 1.4.0 removed RigidEntity.forward_kinematics(); use set_qpos and
+    get_links_pos instead. The qpos is temporarily set and then the link
+    position is read; this is accurate for kinematic queries.
+    """
     ensure_ik_scratch(robot, gs_module=gs)
-    qpos_t = torch.tensor(qpos_np, dtype=torch.float32, device=gs.device)
-    links_pos, _ = robot.forward_kinematics(qpos=qpos_t)
-    idx = int(ee_link.idx_local)
-    if links_pos.ndim == 2:
-        return links_pos[idx].cpu().numpy()
-    return links_pos[0, idx].cpu().numpy()
+    robot.set_qpos(qpos_np.astype(np.float32))
+    link_pos = ee_link.get_pos()
+    if hasattr(link_pos, "cpu"):
+        link_pos = link_pos.cpu().numpy()
+    return np.asarray(link_pos).reshape(-1)[:3]
 
 
 def run_glb_diagnose(

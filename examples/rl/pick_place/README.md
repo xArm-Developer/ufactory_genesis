@@ -8,7 +8,7 @@ deployment.
 
 ## Reference environment and artifact status
 
-Use Linux, an NVIDIA GPU, Python 3.12 or 3.13, Genesis World 1.3.3, Quadrants 1.3.0,
+Use Linux, an NVIDIA GPU, Python 3.12 or 3.13, Genesis World 1.4.0, Quadrants 1.3.0,
 PyTorch 2.10, and RSL-RL 5.4.2. The repository lock file is the reference:
 
 ```bash
@@ -141,6 +141,13 @@ fixed the phase-label ambiguity found on 2026-08-21. The accepted behavior clone
 passed 8/8 from home, then three independent PPO jobs ran for 300 iterations with
 seeds 1, 7, and 17. The selected seed-7 final checkpoint uses
 `place_phase_reset_frac: 0.40` and learning rate `1e-5`.
+
+**Genesis 1.4.0 migration note:** The bundled policy was trained on Genesis 1.3.3.
+After migrating to Genesis 1.4.0, physics behavior may differ due to upstream
+solver changes (lazy IK allocation, renamed mass API, etc.). The v0.2.13
+evaluation results above **must be revalidated or the policy retrained** before
+they can be trusted on 1.4.0. No GPU simulation or policy evaluation was
+performed as part of this migration.
 
 The same selected checkpoint passed all nine evaluation seed/batch combinations
 (219/219 episodes), the independent fixed bank (64/64 full and quality success),
