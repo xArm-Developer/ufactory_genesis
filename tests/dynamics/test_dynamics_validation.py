@@ -429,7 +429,7 @@ def test_check_controller_tcp_offset_z_blocks_nonzero_offset_below_table():
 
     session = object.__new__(RealRobotSession)
     arm = MagicMock()
-    arm.tcp_offset = [0.0, 0.0, 172.0, 0.0, 0.0, 0.0]
+    arm.tcp_offset = [0.0, 0.0, 173.5, 0.0, 0.0, 0.0]
 
     def fk(angles, input_is_radian=True, return_is_radian=True):
         del input_is_radian, return_is_radian
@@ -478,7 +478,7 @@ def test_cli_hardware_check_aborts_before_motion_when_tcp_offset_fails_z_prechec
     )
 
     fake_session = MagicMock()
-    fake_session.arm.tcp_offset = [0.0, 0.0, 172.0, 0.0, 0.0, 0.0]
+    fake_session.arm.tcp_offset = [0.0, 0.0, 173.5, 0.0, 0.0, 0.0]
     fake_session.arm.get_forward_kinematics.return_value = (0, [207.0, 0.0, -58.5, 3.14, 0.0, 0.0])
     monkeypatch.setattr("ufactory.hardware.session.RealRobotSession", lambda *args, **kwargs: fake_session)
 

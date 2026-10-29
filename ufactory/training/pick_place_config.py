@@ -8,6 +8,8 @@ PICK_PLACE_ACTION_CONTRACT = "cartesian_and_g2_gap_delta_v3"
 
 # Fixed scene in robot-base coordinates, shared by configuration and metrics.
 SPAWN_X, SPAWN_Y = 0.300, 0.000
+SPAWN_XY_LOWER = (0.300, -0.200)
+SPAWN_XY_UPPER = (0.500, 0.200)
 TARGET_X, TARGET_Y = 0.300, 0.300
 CUBE_SIZE = 0.030
 CUBE_REST_Z = CUBE_SIZE / 2

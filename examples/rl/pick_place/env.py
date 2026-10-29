@@ -57,7 +57,10 @@ from .metrics import (
     PickPlaceMetrics,
     SPAWN_X,
     SPAWN_Y,
+    SPAWN_XY_LOWER,
+    SPAWN_XY_UPPER,
     SUCCESS_HOLD_STEPS,
+    SUPPORT_FORCE_N,
     TARGET_X,
     TARGET_Y,
     TILT_LIMIT_DEG,
@@ -130,6 +133,20 @@ class XArm6PickPlaceEnv:
         self.close_floor_gap_m = float(env_cfg.get("close_floor_gap_m", CLOSE_FLOOR_GAP_M))
         self.workspace_lower = torch.tensor(env_cfg["workspace_lower"], device=self.device, dtype=gs.tc_float)
         self.workspace_upper = torch.tensor(env_cfg["workspace_upper"], device=self.device, dtype=gs.tc_float)
+        self.spawn_xy_lower = torch.tensor(
+            env_cfg.get("spawn_xy_lower", SPAWN_XY_LOWER), device=self.device, dtype=gs.tc_float
+        )
+        self.spawn_xy_upper = torch.tensor(
+            env_cfg.get("spawn_xy_upper", SPAWN_XY_UPPER), device=self.device, dtype=gs.tc_float
+        )
+        if (
+            self.spawn_xy_lower.shape != (2,)
+            or self.spawn_xy_upper.shape != (2,)
+            or (self.spawn_xy_lower > self.spawn_xy_upper).any()
+            or (self.spawn_xy_lower < self.workspace_lower[:2]).any()
+            or (self.spawn_xy_upper > self.workspace_upper[:2]).any()
+        ):
+            raise ValueError("spawn_xy bounds must be 2D, ordered, and within workspace XY bounds")
         self.reward_gamma = float(env_cfg.get("reward_gamma", 0.995))
         self.near_table_m = float(env_cfg.get("near_table_m", 0.020))
         self.max_near_table_descent_m_s = float(env_cfg.get("max_near_table_descent_m_s", 0.020))
@@ -276,6 +293,7 @@ class XArm6PickPlaceEnv:
         self.gap_cmd = torch.full((self.num_envs,), self.pre_grasp_gap_m, device=self.device, dtype=gs.tc_float)
         self.forces = torch.zeros(self.num_envs, 2, device=self.device, dtype=gs.tc_float)
         self.table_force = torch.zeros(self.num_envs, device=self.device, dtype=gs.tc_float)
+        self.prev_raw_table_force = torch.zeros_like(self.table_force)
         self.robot_table_force = torch.zeros_like(self.table_force)
         self.last_actions = torch.zeros(self.num_envs, self.num_actions, device=self.device, dtype=gs.tc_float)
         self.metrics = PickPlaceMetrics(
@@ -359,7 +377,8 @@ class XArm6PickPlaceEnv:
         self.q_target[idx] = home
 
         if self.fixed_spawns is None:
-            xy = self.default_spawn_xy.expand(n, 2).clone()
+            u = torch.rand(n, 2, device=self.device, dtype=gs.tc_float)
+            xy = self.spawn_xy_lower + u * (self.spawn_xy_upper - self.spawn_xy_lower)
             self.scenario_id[idx] = -1
         else:
             sample = torch.arange(self.fixed_cursor, self.fixed_cursor + n, device=self.device)
@@ -386,6 +405,7 @@ class XArm6PickPlaceEnv:
         self.gap_cmd[idx] = self.pre_grasp_gap_m
         self.forces[idx] = 0.0
         self.table_force[idx] = 0.0
+        self.prev_raw_table_force[idx] = 0.0
         self.robot_table_force[idx] = 0.0
         self.last_actions[idx] = 0.0
         self.ee_setpoint[idx] = self.ee_link.get_pos()[idx]
@@ -420,25 +440,89 @@ class XArm6PickPlaceEnv:
 
     def _apply_action(self, actions: torch.Tensor, current_measured_gap: torch.Tensor) -> None:
         """Integrate every action channel into commands; zero actions hold them."""
-        target = self.ee_setpoint + actions[:, :3] * self.action_scale
-        target = torch.maximum(torch.minimum(target, self.workspace_upper), self.workspace_lower)
         ee = self.ee_link.get_pos()
+        base_setpoint = self.ee_setpoint
+        at_release_table = None
+        near_place = None
+        table_sp_z = None
+        if hasattr(self, "metrics") and hasattr(self, "obj"):
+            obj_pos = self.obj.get_pos()
+            height = cube_clearance(obj_pos, self.obj.get_quat()).clamp(min=0)
+            in_target_xy = torch.linalg.vector_norm(obj_pos[:, :2] - self.target_xy, dim=-1) <= getattr(
+                self.metrics, "target_tol", 0.020
+            )
+            at_release_table = (
+                self.metrics.ever_lifted_clear
+                & in_target_xy
+                & (height <= self.metrics.release_max_height)
+                & (
+                    self.metrics.touchdown_seen
+                    | self.metrics.release_confirmed
+                    | (height <= self.metrics.place_clearance)
+                )
+            )
+            pre_lift = ~self.metrics.ever_lifted_clear
+            if pre_lift.any():
+                contact_steps = getattr(self.metrics, "contact_steps", torch.zeros_like(self.metrics.hold_steps))
+                ever_carried = getattr(self.metrics, "ever_carried", torch.zeros_like(self.metrics.ever_lifted_clear))
+                gripping_pre_lift = pre_lift & ((contact_steps >= 3) | ever_carried)
+                pre_lift_min_sp_z = torch.where(
+                    gripping_pre_lift,
+                    torch.maximum(base_setpoint[:, 2], ee[:, 2] + 0.0036).clamp(min=0.1818),
+                    torch.full_like(ee[:, 2], 0.1818),
+                )
+                base_setpoint = base_setpoint.clone()
+                base_setpoint[:, 2] = torch.where(
+                    pre_lift,
+                    torch.maximum(base_setpoint[:, 2], pre_lift_min_sp_z),
+                    base_setpoint[:, 2],
+                )
+                actions = actions.clone()
+                actions[:, 2] = torch.where(gripping_pre_lift, actions[:, 2].clamp(min=0.0), actions[:, 2])
+            near_place = self.metrics.ever_lifted_clear & (height <= self.near_table_m)
+            if near_place.any():
+                table_ee_z = torch.maximum(self.metrics.touchdown_ee_z, ee[:, 2] - height)
+                table_sp_z = table_ee_z + 0.0036
+                curr_eq_sp_z = ee[:, 2] + 0.0036
+                sp_z = base_setpoint[:, 2]
+                sp_z = torch.where(
+                    near_place,
+                    torch.maximum(sp_z, torch.maximum(table_sp_z, curr_eq_sp_z - 0.0012)),
+                    sp_z,
+                )
+                base_setpoint = base_setpoint.clone()
+                base_setpoint[:, 2] = sp_z
+                near_dz_limit = 0.015 * self.ctrl_dt
+                dz_cmd = (actions[:, 2] * self.action_scale).clamp(min=-near_dz_limit) / self.action_scale
+                dz_cmd = torch.where(
+                    at_release_table,
+                    dz_cmd.clamp(max=near_dz_limit / self.action_scale),
+                    dz_cmd,
+                )
+                dz_cmd = torch.where(at_release_table & (actions[:, 2] <= 0.3), torch.zeros_like(dz_cmd), dz_cmd)
+                actions = actions.clone()
+                actions[:, 2] = torch.where(near_place, dz_cmd, actions[:, 2])
+                hold_xy = at_release_table & (~self.metrics.release_confirmed)
+                actions[:, :2] = torch.where(hold_xy[:, None], actions[:, :2] * 0.25, actions[:, :2])
+        target = base_setpoint + actions[:, :3] * self.action_scale
+        if hasattr(self, "metrics") and hasattr(self, "obj"):
+            target[:, 2] = torch.where(~self.metrics.ever_lifted_clear, target[:, 2].clamp(min=0.1818), target[:, 2])
+        if near_place is not None and table_sp_z is not None:
+            target[:, 2] = torch.where(near_place, torch.maximum(target[:, 2], table_sp_z), target[:, 2])
+        target = torch.maximum(torch.minimum(target, self.workspace_upper), self.workspace_lower)
         delta = target - ee
         scale = (self.setpoint_leash_m / torch.linalg.vector_norm(delta, dim=-1, keepdim=True).clamp(min=1e-9)).clamp(
             max=1
         )
-        moving = (actions[:, :3] != 0).any(-1)
-        target = torch.where(moving[:, None], ee + delta * scale, self.ee_setpoint)
+        moving = (actions[:, :3] != 0).any(-1) | (base_setpoint != self.ee_setpoint).any(-1)
+        target = torch.where(moving[:, None], ee + delta * scale, base_setpoint)
         q, reject = self._solve_ik(target)
         accepted = moving & (~reject)
-        self.ee_setpoint = torch.where(accepted[:, None], target, self.ee_setpoint)
+        self.ee_setpoint = torch.where(accepted[:, None], target, base_setpoint)
         self.q_target = torch.where(accepted[:, None], q, self.q_target)
         self.robot.control_dofs_position(self.q_target, self.arm_dof_idx)
         base_gap = self.gap_cmd
-        if hasattr(self, "metrics"):
-            at_release_table = self.metrics.ever_lifted_clear & (
-                self.metrics.touchdown_seen | self.metrics.release_confirmed
-            )
+        if at_release_table is not None:
             opening_at_table = at_release_table & (actions[:, 3] > 0) & (self.gap_cmd < current_measured_gap)
             base_gap = torch.where(opening_at_table, current_measured_gap, base_gap)
         self.gap_cmd = (base_gap + actions[:, 3] * self.gap_action_scale).clamp(
@@ -459,6 +543,7 @@ class XArm6PickPlaceEnv:
         pad_mid = (left + right) / 2
         distance = grasp_distance(pad_mid, obj)
         pad_xy_err = torch.linalg.vector_norm((pad_mid - obj)[:, :2], dim=-1)
+        dz_band = ((pad_mid[:, 2] - obj[:, 2]).abs() - CUBE_SIZE * 0.4).clamp(min=0)
         height = cube_clearance(obj, self.obj.get_quat()).clamp(min=0)
         target_error = torch.linalg.vector_norm(obj[:, :2] - self.target_xy, dim=-1)
         current_gap = self.measured_gap()
@@ -469,20 +554,58 @@ class XArm6PickPlaceEnv:
             (self.forces.amin(-1) / 2).clamp(0, 1),
             0.75 * (self.forces.amin(-1) / 2).clamp(0, 1) + 0.25 * (self.forces.amin(-1) / 20).clamp(0, 1),
         )
+        spawn_xy = getattr(self.metrics, "spawn_xy", None)
         grip = grip_force * grasp_near * (~placed).float()
-        desired_gap = self.pre_grasp_gap_m - 0.025 * torch.exp(-distance / 0.012)
-        gap_alignment = torch.exp(-(current_gap - desired_gap).abs() / 0.012)
+        outside_xy = (pad_xy_err - 0.015).clamp(min=0)
+        z_floor = obj[:, 2] + CUBE_SIZE * 0.4 + 0.038 * (1.0 - torch.exp(-(outside_xy / 0.015).square()))
+        below_floor = torch.where(
+            self.metrics.ever_lifted_clear | (self.forces > 0.2).any(-1),
+            0.0,
+            (z_floor - pad_mid[:, 2]).clamp(min=0),
+        )
+        floor_gate = torch.exp(-below_floor / 0.015)
+        near_cube = torch.where(
+            self.metrics.ever_lifted_clear | (self.forces > 0.2).any(-1),
+            1.0,
+            torch.exp(-(distance / 0.012).square()),
+        )
+        at_table = self.metrics.ever_lifted_clear & (
+            (height <= self.metrics.release_max_height) | self.metrics.touchdown_seen | self.metrics.release_confirmed
+        )
+        at_target_table = at_table & (target_error <= getattr(self.metrics, "target_tol", 0.020))
+        gap_cmd_ref = getattr(self, "gap_cmd", current_gap)
+        over_open = torch.where(
+            at_target_table,
+            0.0,
+            0.65 * (current_gap - self.pre_grasp_gap_m).clamp(min=0)
+            + 0.35 * (gap_cmd_ref - self.pre_grasp_gap_m).clamp(min=0),
+        )
+        early_close = (
+            (self.pre_grasp_gap_m - torch.minimum(current_gap, gap_cmd_ref))
+            / (self.pre_grasp_gap_m - self.close_floor_gap_m)
+        ).clamp(0, 1)
+        cmd_close = ((self.pre_grasp_gap_m - gap_cmd_ref) / (self.pre_grasp_gap_m - self.close_floor_gap_m)).clamp(0, 1)
+        meas_close = ((self.pre_grasp_gap_m - current_gap) / (self.pre_grasp_gap_m - CUBE_SIZE)).clamp(0, 1)
+        close_progress = torch.where(
+            at_target_table,
+            1.0,
+            torch.where(self.metrics.ever_lifted_clear, meas_close, 0.65 * meas_close + 0.35 * cmd_close),
+        )
+        pregrasp_gap = (
+            0.62 * (1.0 - (1.0 - near_cube).square() * early_close) + 0.38 * near_cube * close_progress
+        ) * torch.exp(-over_open / 0.010)
+        approach_kernel = (
+            0.35 * torch.exp(-pad_xy_err / 0.22 - dz_band / 0.06) + 0.65 * torch.exp(-distance / 0.045)
+        ) * floor_gate
+        pregrasp_kernel = 1.125 * torch.exp(-distance / 0.040) * pregrasp_gap * floor_gate
         target_near = torch.exp(-target_error / 0.04)
+        place_approach = 0.75 * target_near + 0.25 * torch.exp(-target_error / 0.18)
         target_zone = torch.exp(-(target_error - 0.015).clamp(min=0) / 0.04)
         lifted = self.metrics.ever_lifted_clear.float()
         place_height_err = (height - self.metrics.place_clearance).clamp(min=0)
         both_clear = (self.forces < 0.1).all(-1).float()
         released_clear = self.metrics.release_confirmed.float() * both_clear
         meas_open = ((current_gap - CUBE_SIZE) / (self.pre_grasp_gap_m - CUBE_SIZE)).clamp(0, 1)
-        at_table = self.metrics.ever_lifted_clear & (
-            (height <= self.metrics.release_max_height) | self.metrics.touchdown_seen | self.metrics.release_confirmed
-        )
-        pad_xy_drift = (pad_xy_err - 0.008).clamp(min=0)
         if hasattr(self, "ee_link"):
             ee_z = self.ee_link.get_pos()[:, 2]
             ref_ee_z = torch.where(self.metrics.touchdown_ee_z > 0, self.metrics.touchdown_ee_z, 0.184)
@@ -492,9 +615,9 @@ class XArm6PickPlaceEnv:
                 (ref_ee_z - ee_z - 0.0025).clamp(min=0),
                 0.0,
             )
-            post_td_pose = torch.exp(-pad_xy_drift / 0.015) * torch.exp(-ee_sink / 0.0015)
+            post_td_pose = torch.exp(-ee_sink / 0.0015)
         else:
-            post_td_pose = torch.exp(-pad_xy_drift / 0.015)
+            post_td_pose = torch.ones_like(target_error)
         table_guard = post_td_pose * torch.where(placed, released_clear, 1.0)
         place_zone = lifted * target_zone * torch.exp(-place_height_err / 0.005) * table_guard
         cmd_open = ((self.gap_cmd - self.close_floor_gap_m) / (self.pre_grasp_gap_m - self.close_floor_gap_m)).clamp(
@@ -504,27 +627,36 @@ class XArm6PickPlaceEnv:
         open_drive = 0.85 * cmd_open + 0.15 * action_open
         release_zone = place_zone * torch.maximum(open_drive, meas_open)
         approach_term = torch.maximum(
-            torch.exp(-distance / 0.06) * torch.where(at_table, table_guard, 1.0),
+            approach_kernel * torch.where(at_table, table_guard, 1.0),
             release_zone,
         )
         pregrasp = torch.maximum(
-            torch.exp(-distance / 0.04) * gap_alignment * torch.where(at_table, table_guard, 1.0),
-            release_zone,
+            pregrasp_kernel * torch.where(at_table, table_guard, 1.0),
+            1.125 * release_zone,
         )
         grasp_or_place = torch.maximum(
             grip * torch.where(at_table, post_td_pose, 1.0),
             place_zone,
         )
         hold_progress = (self.metrics.hold_steps.float() / self.metrics.required_hold_steps).clamp(0, 1)
+        init_target_dist = (
+            torch.linalg.vector_norm(spawn_xy - self.target_xy, dim=-1)
+            if spawn_xy is not None
+            else torch.full_like(target_error, 0.3)
+        )
+        max_lift = (self.metrics.max_held_z - CUBE_REST_Z).clamp(0, SAFE_LIFT_Z - CUBE_REST_Z)
+        current_lift = torch.where((self.forces > 0.05).all(-1), height.clamp(0, SAFE_LIFT_Z - CUBE_REST_Z), 0.0)
+        lift_progress = torch.where(self.metrics.ever_lifted_clear, max_lift, 0.75 * current_lift + 0.25 * max_lift)
+        transit_xy_progress = (init_target_dist - target_error).clamp(min=-0.05)
+        excess_height = (height - (SAFE_LIFT_Z - CUBE_REST_Z)).clamp(min=0)
         s = self.reward_scales
         return (
             float(s.get("approach_potential", 8)) * approach_term
             + float(s.get("pregrasp_potential", 4)) * pregrasp
             + float(s.get("grasp_potential", 4)) * grasp_or_place
-            + float(s.get("lift_potential", 40))
-            * (self.metrics.max_held_z - CUBE_REST_Z).clamp(0, SAFE_LIFT_Z - CUBE_REST_Z)
-            + float(s.get("transit_potential", 8)) * lifted * (0.3 - target_error)
-            + float(s.get("place_potential", 6)) * lifted * target_near / (1 + place_height_err / 0.10)
+            + float(s.get("lift_potential", 40)) * lift_progress
+            + float(s.get("transit_potential", 8)) * lifted * (transit_xy_progress - 0.8 * excess_height)
+            + float(s.get("place_potential", 6)) * lifted * place_approach / (1 + place_height_err / 0.10)
             + float(s.get("release_potential", 4)) * place_zone * open_drive
             + float(s.get("hold_potential", 6)) * (0.5 * place_zone * meas_open + 0.5 * hold_progress)
         )
@@ -557,16 +689,26 @@ class XArm6PickPlaceEnv:
             right_link_idx=int(self.right_finger_link.idx),
         )
         self.forces = torch.stack([fl, fr], -1).to(self.device)
-        self.table_force, self.robot_table_force = table_contact_loads(
+        raw_table_force, self.robot_table_force = table_contact_loads(
             self.table.get_contacts(),
             table_link_idx=int(self.table.links[0].idx),
             object_link_idx=int(self.obj.links[0].idx),
         )
+        obj_quat = self.obj.get_quat()
+        obj_vel = self.obj.get_vel()
+        substep_alias = (
+            (raw_table_force == 0)
+            & (self.prev_raw_table_force > SUPPORT_FORCE_N)
+            & (cube_clearance(obj, obj_quat) <= 0.0)
+            & (obj_vel[:, 2].abs() < 0.01)
+        )
+        self.table_force = torch.where(substep_alias, self.prev_raw_table_force, raw_table_force)
+        self.prev_raw_table_force = raw_table_force.clone()
         status = self.metrics.update(
             obj,
-            self.obj.get_quat(),
+            obj_quat,
             self.forces,
-            self.obj.get_vel(),
+            obj_vel,
             self.measured_gap(),
             ee_z=ee[:, 2],
             table_force=self.table_force,
@@ -584,7 +726,12 @@ class XArm6PickPlaceEnv:
         timeout = self.episode_length_buf >= self.max_episode_length
         done = success | failed | timeout
         s = self.reward_scales
-        first_contact = status["stable_contact"] & (~self.contact_rewarded) & status["quality_ok"]
+        left, right = pad_centers(self.g2_model, self.left_finger_link, self.right_finger_link)
+        pad_mid = (left + right) / 2
+        in_vertical_grasp_band = (pad_mid[:, 2] - obj[:, 2]).abs() <= CUBE_SIZE * 0.4 + 1e-4
+        first_contact = (
+            status["stable_contact"] & (~self.contact_rewarded) & status["quality_ok"] & in_vertical_grasp_band
+        )
         self.contact_rewarded |= first_contact
         first_place = (
             status["first_release"] & status["in_target_xy"] & (~self.metrics.high_release) & (~self.place_rewarded)
@@ -595,6 +742,7 @@ class XArm6PickPlaceEnv:
         potential = torch.where(done & (~success), 0, self._potential())
         reward = self.reward_gamma * potential - old_potential - float(s.get("step_penalty", 0.005))
         reward += first_contact.float() * float(s.get("first_contact", 2))
+        reward += status["first_carry"].float() * float(s.get("first_carry", 3))
         reward += status["first_lift_clear"].float() * float(s.get("first_lift", 6))
         reward += first_place.float() * float(s.get("first_place", 10))
         at_release_table = (
@@ -681,26 +829,37 @@ class XArm6PickPlaceEnv:
         left, right = pad_centers(self.g2_model, self.left_finger_link, self.right_finger_link)
         target = obj.new_tensor((TARGET_X, TARGET_Y, CUBE_REST_Z)).expand(self.num_envs, 3)
         m = self.metrics
+        at_release = m.touchdown_seen | m.release_confirmed
+        ee_obs = torch.cat(
+            [
+                torch.where(m.ever_lifted_clear[:, None], (ee[:, :2] - self.target_xy) / 0.3, 0.0),
+                ee[:, 2:3],
+            ],
+            dim=-1,
+        )
+        obj_obs = torch.cat([obj[:, :2] - ee[:, :2], obj[:, 2:3]], dim=-1)
+        target_obs = torch.where(m.ever_lifted_clear[:, None], (target - obj) / 0.3, 0.0)
+        target_obs[:, 2] = torch.where(at_release, 0.0, target_obs[:, 2])
         obs = torch.cat(
             [
                 self.robot.get_dofs_position(self.arm_dof_idx) / math.pi,  # 6
                 self.robot.get_dofs_velocity(self.arm_dof_idx) / 2,  # 6
-                ee,
+                ee_obs,
                 self.ee_link.get_vel() / 0.2,  # 6
-                obj,
+                obj_obs,
                 self.obj.get_quat(),
                 self.obj.get_vel() / 0.2,
                 self.obj.get_ang() / 2,  # 13
-                (target - obj) / 0.3,
+                target_obs,
                 (left - obj) / 0.1,
                 (right - obj) / 0.1,  # 9
                 self.gap_cmd[:, None] / GRIPPER_G2_OPEN_GAP_M,
                 self.measured_gap()[:, None] / GRIPPER_G2_OPEN_GAP_M,  # 2
                 (self.ee_setpoint - ee) / self.setpoint_leash_m,  # 3
-                (self.forces / 20).clamp(0, 5),
+                (self.forces / 20).clamp(0, 1),
                 m.finger_contact.float(),  # 4
-                (self.table_force / 5).clamp(0, 20)[:, None],
-                (self.robot_table_force / 5).clamp(0, 20)[:, None],  # 2
+                torch.where(m.ever_lifted_clear, (self.table_force / 20).clamp(0, 1), 0.0)[:, None],
+                (self.robot_table_force / 20).clamp(0, 1)[:, None],  # 2
                 self.last_actions,  # 4
                 (m.max_drag / DRAG_LIMIT_M)[:, None],
                 (m.max_tilt_deg / TILT_LIMIT_DEG)[:, None],
@@ -716,7 +875,9 @@ class XArm6PickPlaceEnv:
                 self.contact_rewarded[:, None].float(),
                 self.place_rewarded[:, None].float(),  # 2
                 (1 - self.episode_length_buf.float() / self.max_episode_length)[:, None],  # 1
-                ((m.max_held_z - CUBE_REST_Z) / 0.1)[:, None],  # 1
+                ((m.max_held_z - CUBE_REST_Z).clamp(0, SAFE_LIFT_Z - CUBE_REST_Z) / (SAFE_LIFT_Z - CUBE_REST_Z))[
+                    :, None
+                ],  # 1
             ],
             dim=-1,
         )

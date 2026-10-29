@@ -2,7 +2,7 @@
 
 ## Supported version
 
-Only the current `0.3.5` development line receives security fixes. This is Alpha robotics software and is not safety-certified.
+Only the current `0.3.6` development line receives security fixes. This is Alpha robotics software and is not safety-certified.
 
 ## Reporting
 

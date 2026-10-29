@@ -1,5 +1,5 @@
 {
-  "manifest_version": "0.3.5",
+  "manifest_version": "0.3.6",
   "required_paths": [
     "assets/configs/runtime/motion/default.yaml",
     "assets/configs/runtime/safety/default.yaml",
@@ -39,10 +39,10 @@
   "sha256": {
     "assets/configs/runtime/motion/default.yaml": "ce961bb044f0c95a803fac693bffb7c75b3e78df61ce90e4ab2644e79be73f03",
     "assets/configs/runtime/robots/lite6.yaml": "9c7b4c93ceb3ebf297ec65388671d1bc7618b180690cd49123e9c8b233075810",
-    "assets/configs/runtime/robots/uf850.yaml": "2eb842702fc5fa208087d02cc8d641059c181c5df3c844c5342a71a8114dbf6a",
-    "assets/configs/runtime/robots/xarm5_1305.yaml": "d6184ea7d52f4abebcdba3e04778f727bef1dbe6f70c81c541010cdf6adf6a2a",
-    "assets/configs/runtime/robots/xarm6_1305.yaml": "181f3df3aa4bc1ca0f3cc657abbdd34aaaa41ae62dfbdc71cfcc536527352ff6",
-    "assets/configs/runtime/robots/xarm7_1305.yaml": "7211357d88d14e47a6a294d9bbd588aac493c26553e8df2db3c9ac53d4ea6d3b",
+    "assets/configs/runtime/robots/uf850.yaml": "d9314b884be3ca1f3030230c84b8c2d3f3ee489b0841940a2a7cc5a6bd7e81c8",
+    "assets/configs/runtime/robots/xarm5_1305.yaml": "043fb5d009be04d6a538f7633a23510b297e2398ec23e448aeeaa9faad4ca357",
+    "assets/configs/runtime/robots/xarm6_1305.yaml": "9f8674a2663cf87ebd5d5909025affe5771f7bd2052d5566ae3bf216615443df",
+    "assets/configs/runtime/robots/xarm7_1305.yaml": "3a430a8a119e69f58d49a8104ad8aba13ae21887c66022f0c4483f54ba5b1424",
     "assets/configs/runtime/safety/default.yaml": "081ab8646ebfa46e8535ae4c07cd25be0e7122d569cad77c1a08858978f0f451",
     "assets/configs/runtime/safety/robots/lite6.yaml": "1deb54fc773c4d2449ec1b61485e435ecf4ddc369f9ba553d2eb92872af709c5",
     "assets/configs/runtime/simulation/default.yaml": "cd9190764697a78c5a2e736e19448b70a823b875fa546ce48edf7f85dc72e61a",
@@ -63,12 +63,12 @@
     "assets/urdf/lite6_gripper/meshes/visual/lite6_gripper_static_link6.glb": "1b7c3b05eb5ef63fadb5b65bf097fb349c18607ccb19ac321b74af247dd9c406",
     "assets/urdf/lite6_gripper/meshes/visual/visual_glb/shell.glb": "1ae8f67d1ddfa3b5a7f09265aa680eff72bc05f4c817470ac885333dde1cce57",
     "assets/urdf/uf850/uf850.urdf": "5f5b83d084b78411267886b53420e004ef13ea9ec95c0af471cd7d6f0f6c9d67",
-    "assets/urdf/uf850/uf850_g2_movable_visual.urdf": "7270a36881e3e6cf532806e2f420c1ee310f16c4e610e68c63b97dc38f0b1758",
+    "assets/urdf/uf850/uf850_g2_movable_visual.urdf": "070428eac1e847f57bf03076446e4fb984e454121011e3bcda6e1657c29103d0",
     "assets/urdf/xarm5/xarm5_1305.urdf": "366848093f40077ad49bc91874056c189ed7a83551781e00dab75fe1affabcac",
-    "assets/urdf/xarm5/xarm5_1305_g2_movable_visual.urdf": "30b5f402183116a1b9ef406bc67a72e59c61cb45aa29da389e4c18d0434866ca",
+    "assets/urdf/xarm5/xarm5_1305_g2_movable_visual.urdf": "65d9affbf5ef488ae4cd4826eccd71e47e3f3b405663d5b7d86c7a6e1acd20f8",
     "assets/urdf/xarm6/xarm6_1305.urdf": "73e03c904b18c70e489205c4d8c57242a6577d53b7b0ecb1f9384b487e2cb5ad",
-    "assets/urdf/xarm6/xarm6_1305_g2_movable_visual.urdf": "5ccd5a6f004aac21c0fea1d3a02992d7da650793b337a9ba5541675e056f2ee2",
+    "assets/urdf/xarm6/xarm6_1305_g2_movable_visual.urdf": "6df65c8ff59d704c6d86cd796c9a139bf6e2a8e98266c6a49ead1ca56f1a262c",
     "assets/urdf/xarm7/xarm7_1305.urdf": "6d5ebdb02126bcf945c863cfa96a2feea36cc66ef8d17d36b43db194904df627",
-    "assets/urdf/xarm7/xarm7_1305_g2_movable_visual.urdf": "6d08e0e16ac6c7cc6e2031073241dd3b49ef69e3cc3b8c6b79a2251dd352159a"
+    "assets/urdf/xarm7/xarm7_1305_g2_movable_visual.urdf": "41d9011232107d72b44a9455b9316a68688911d2c1ebf6015e85e579d1612701"
   }
 }

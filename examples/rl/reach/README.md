@@ -168,5 +168,5 @@ python -m examples.rl.reach.visualize \
 | `train.py`, `evaluate.py`, `visualize.py`, `run_experiments.py` | Command-line entry points |
 
 - Use `--recipe` and `--runtime-config` to specify custom files.
-- Checkpoint loading verifies the runtime configuration hash; retrain after changing the task configuration.
+- Checkpoint loading verifies the task configuration and action contract; retrain after changing the task configuration.
 - Training logs, checkpoint manifests and cache setup share the `ufactory/training` implementation with Pick & Place.

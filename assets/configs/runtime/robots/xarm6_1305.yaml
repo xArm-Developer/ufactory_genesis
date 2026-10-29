@@ -37,7 +37,7 @@ gripper:
   feedback: true
   closed_loop: true
   allowed_contact_links: [left_finger, right_finger]
-  tool_tip_offset_z_m: 0.1011
+  tool_tip_offset_z_m: 0.1026
   finger_pad_below_center_m: 0.061
   finger_close_descent_m: 0.015
   grasp_table_clearance_m: 0.010

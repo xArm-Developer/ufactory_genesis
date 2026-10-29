@@ -45,7 +45,7 @@ def _default_waypoints() -> list[dict]:
     obj_x, obj_y = 0.30, 0.00
     place_x, place_y = 0.30, 0.30
     home = [0.30, 0.00, 0.30]
-    finger_z_offset = 0.1011
+    finger_z_offset = 0.1026
     grasp_z = 0.010 + 0.015 + 0.061 + finger_z_offset
     pre_grasp_z = grasp_z + 0.10
     lift_z = 0.30

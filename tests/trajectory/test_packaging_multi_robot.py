@@ -40,8 +40,8 @@ def test_g2_packaging_profiles_preserve_reference_geometry(robot: str) -> None:
 
     assert layout.object_position_m == pytest.approx((0.300, 0.000, 0.015))
     assert layout.target_position_m == pytest.approx((0.300, 0.300, 0.018))
-    assert layout.grasp_link6_z_m == pytest.approx(0.1871)
-    assert layout.release_link6_z_m == pytest.approx(0.3901)
+    assert layout.grasp_link6_z_m == pytest.approx(0.1886)
+    assert layout.release_link6_z_m == pytest.approx(0.3916)
 
 
 def test_g2_packaging_scene_rejects_unsafe_global_substeps_before_build() -> None:

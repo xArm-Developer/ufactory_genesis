@@ -76,6 +76,91 @@ def test_standard_g2_urdfs_share_joint_limits_and_mimic_linkage() -> None:
     )
 
 
+def test_standard_g2_urdf_joint_origins_and_mesh_alignment() -> None:
+    """Standard Gripper G2 URDFs and meshes must match the SolidWorks STEP AG1200 calibration."""
+    trimesh = pytest.importorskip("trimesh")
+    pytest.importorskip("DracoPy")
+    pytest.importorskip("pygltflib")
+    from ufactory.grippers.g2 import gripper_g2_gap_m_to_sim_drive
+
+    expected_joint_origins = {
+        "drive_joint": (0.0, 0.035, 0.0606),
+        "left_finger_joint": (0.0, 0.035465, 0.042039),
+        "left_inner_knuckle_joint": (0.0, 0.02, 0.075602),
+        "right_outer_knuckle_joint": (0.0, -0.035, 0.0606),
+        "right_finger_joint": (0.0, -0.035465, 0.042039),
+        "right_inner_knuckle_joint": (0.0, -0.02, 0.075602),
+        "joint_tcp": (0.0, 0.0, 0.1735),
+    }
+    g2_links = {
+        "gripper_g2_visual",
+        "xarm_gripper_base_link",
+        "left_outer_knuckle",
+        "left_finger",
+        "left_inner_knuckle",
+        "right_outer_knuckle",
+        "right_finger",
+        "right_inner_knuckle",
+    }
+
+    models = []
+    for path in sorted((PROJECT_ROOT / "assets/urdf").rglob("*.urdf")):
+        root = ET.parse(path).getroot()
+        if root.find("./joint[@name='drive_joint']") is not None:
+            models.append((path, root))
+    assert len(models) == 11
+
+    for path, root in models:
+        for jname, expected_xyz in expected_joint_origins.items():
+            joint = root.find(f"./joint[@name='{jname}']")
+            assert joint is not None, (path, jname)
+            origin = joint.find("origin")
+            assert origin is not None, (path, jname)
+            assert _rounded_xyz(origin.get("xyz")) == expected_xyz, (path, jname)
+            assert _rounded_xyz(origin.get("rpy")) == (0.0, 0.0, 0.0), (path, jname)
+        for link in root.findall("link"):
+            lname = link.get("name") or ""
+            if lname not in g2_links:
+                continue
+            for tag in ("visual", "collision"):
+                for node in link.findall(tag):
+                    orig = node.find("origin")
+                    if orig is not None:
+                        assert _rounded_xyz(orig.get("xyz")) == (0.0, 0.0, 0.0), (path, lname, tag)
+                        assert _rounded_xyz(orig.get("rpy")) == (0.0, 0.0, 0.0), (path, lname, tag)
+
+    pkg = PROJECT_ROOT / "assets" / "urdf" / "gripper_g2" / "meshes"
+    base_stl = _mesh_vertices(pkg / "collision" / "base_link.stl", trimesh)
+    base_glb = _mesh_vertices(pkg / "visual" / "visual_glb" / "base.glb", trimesh)
+    static_glb = _mesh_vertices(pkg / "visual" / "gripper_g2_static.glb", trimesh)
+    lf_glb = _mesh_vertices(pkg / "visual" / "visual_glb" / "left_finger.glb", trimesh)
+    rf_glb = _mesh_vertices(pkg / "visual" / "visual_glb" / "right_finger.glb", trimesh)
+
+    assert base_stl[:, 2].min() * 1000.0 == pytest.approx(-5.0, abs=0.01)
+    assert base_stl[:, 2].max() * 1000.0 == pytest.approx(104.5, abs=0.01)
+    assert base_glb[:, 2].min() * 1000.0 == pytest.approx(-5.0, abs=0.01)
+    assert base_glb[:, 2].max() * 1000.0 == pytest.approx(104.5, abs=0.01)
+    assert static_glb[:, 2].min() * 1000.0 == pytest.approx(-5.0, abs=0.01)
+    assert static_glb[:, 2].max() * 1000.0 == pytest.approx(176.323, abs=0.01)
+
+    for gap_mm, expected_axial_mm in (
+        (0.0, 175.86527),
+        (18.0, 176.60609),
+        (29.1558585, 176.32219),
+        (84.0, 165.60379),
+    ):
+        q = gripper_g2_gap_m_to_sim_drive(gap_mm / 1000.0)
+        c, s = float(np.cos(q)), float(np.sin(q))
+        y_fj = 0.035465 * c - 0.042039 * s
+        z_fj = 0.035465 * s + 0.042039 * c
+        wl = lf_glb + np.array([0.0, 0.035 + y_fj, 0.0606 + z_fj])
+        wr = rf_glb + np.array([0.0, -0.035 - y_fj, 0.0606 + z_fj])
+        actual_gap_mm = float((wl[:, 1].min() - wr[:, 1].max()) * 1000.0)
+        actual_axial_mm = float(max(wl[:, 2].max(), wr[:, 2].max()) * 1000.0)
+        assert actual_gap_mm == pytest.approx(gap_mm, abs=0.01)
+        assert actual_axial_mm == pytest.approx(expected_axial_mm, abs=0.01)
+
+
 def test_intermediate_assets_and_dev_scripts_are_not_public_files() -> None:
     forbidden_markers = (
         "visual_glb_raw",

@@ -1,6 +1,6 @@
 # ufactory_genesis
 
-![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Version](https://img.shields.io/badge/version-0.3.5-orange) ![Genesis](https://img.shields.io/badge/genesis-1.4.5-lightgrey) ![CI](https://github.com/xArm-Developer/ufactory_genesis/actions/workflows/ci.yml/badge.svg)
+![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Version](https://img.shields.io/badge/version-0.3.6-orange) ![Genesis](https://img.shields.io/badge/genesis-1.4.5-lightgrey) ![CI](https://github.com/xArm-Developer/ufactory_genesis/actions/workflows/ci.yml/badge.svg)
 
 UFACTORY robot simulation and reinforcement learning examples built on Genesis.
 
@@ -26,7 +26,7 @@ Installation and complete commands are in the [examples guide](examples/README.m
 Simulation-only training and inference on Linux/NVIDIA GPUs. See the [RL index](examples/rl/README.md) for the task progression and guides.
 
 1. **[Reach: target reaching](examples/rl/reach/README.md)** — Move the end effector of a bare-arm robot (`xarm5`, `xarm6`, `xarm7`, `uf850`, `lite6`) to a target with a success distance strictly below **5 mm**. Supports single-arm and four-arm real-time GLB inference, with [pretrained checkpoints on Hugging Face](https://huggingface.co/UFACTORY-Developer/ufactory_genesis_rl).
-2. **[Pick & Place: tabletop](examples/rl/pick_place/README.md)** — xArm6 + Gripper G2 grasps and transfers a cube to a tabletop target. Uses pure PPO with a fixed `+Y` layout; train policies from scratch.
+2. **[Pick & Place: tabletop](examples/rl/pick_place/README.md)** — xArm6 + Gripper G2 grasps and transfers a cube sampled uniformly in `x ∈ [300, 500] mm`, `y ∈ [-200, 200] mm` to a fixed target at `(300, 300) mm`, trained from scratch with pure PPO.
 
 
 

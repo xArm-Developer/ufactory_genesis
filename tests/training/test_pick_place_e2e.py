@@ -101,8 +101,12 @@ def test_approach_potential_prefers_open_gap_until_grasp_alignment(monkeypatch):
     env.measured_gap = lambda: torch.tensor([0.05, 0.012])
     potential = env._potential()
     assert potential[0] > potential[1] + 1.0
-    # Once aligned, an actual grasp must beat an empty open gripper.
+    # Once aligned, starting to close (50 -> 44 mm) and grasping must both increase potential monotonically.
     pads[:, 2] = 0.027
+    env.gap_cmd = torch.tensor([0.050, 0.044])
+    env.measured_gap = lambda: torch.tensor([0.050, 0.044])
+    closing = env._potential()
+    assert closing[1] > closing[0] + 0.1
     env.measured_gap = lambda: torch.tensor([0.05, 0.03])
     env.forces[1] = 2.0
     potential = env._potential()
@@ -148,6 +152,109 @@ def test_approach_potential_prefers_open_gap_until_grasp_alignment(monkeypatch):
     env.measured_gap = lambda: torch.tensor([0.030, 0.050])
     potential = env._potential()
     assert potential[1] > potential[0] + 5.0
+
+
+def test_distant_spawn_lift_has_no_negative_transit_potential_jump(monkeypatch):
+    env = controller(monkeypatch)
+    from examples.rl.pick_place import env as module
+
+    spawns = torch.tensor([[0.50, -0.20], [0.30, 0.20]])
+    obj = torch.tensor([[0.50, -0.20, 0.080], [0.30, 0.20, 0.080]])
+    pads = obj.clone()
+    env.obj = SimpleNamespace(get_pos=lambda: obj, get_quat=lambda: torch.tensor([[1.0, 0.0, 0.0, 0.0]]).repeat(2, 1))
+    monkeypatch.setattr(module, "pad_centers", lambda *args: (pads, pads))
+    env.g2_model, env.left_finger_link, env.right_finger_link = None, None, None
+    env.pre_grasp_gap_m, env.reward_scales = 0.05, {}
+    env.target_xy = torch.tensor([[0.3, 0.3]])
+    env.forces = torch.full((2, 2), 2.0)
+    env.place_rewarded = torch.zeros(2, dtype=torch.bool)
+    env.metrics = SimpleNamespace(
+        spawn_xy=spawns.clone(),
+        max_held_z=torch.full((2,), 0.080),
+        ever_lifted_clear=torch.zeros(2, dtype=torch.bool),
+        release_confirmed=torch.zeros(2, dtype=torch.bool),
+        touchdown_seen=torch.zeros(2, dtype=torch.bool),
+        touchdown_ee_z=torch.zeros(2),
+        hold_steps=torch.zeros(2, dtype=torch.long),
+        required_hold_steps=10,
+        place_clearance=0.002,
+        release_max_height=0.003,
+    )
+    env.measured_gap = lambda: torch.full((2,), 0.03)
+    before_lift_flag = env._potential()
+    env.metrics.ever_lifted_clear[:] = True
+    after_lift_flag = env._potential()
+    assert torch.all(after_lift_flag >= before_lift_flag)
+    # Moving 50 mm closer to target from any spawn increases potential equally in transit term.
+    obj[:, 1] += 0.05
+    pads[:] = obj
+    moved_closer = env._potential()
+    assert torch.all(moved_closer > after_lift_flag + 0.35)
+    # When horizontally far from a resting cube, hovering at z=65 mm beats diving to z=25 mm.
+    env.metrics.ever_lifted_clear[:] = False
+    env.metrics.max_held_z[:] = 0.015
+    env.forces[:] = 0.0
+    env.gap_cmd = torch.full((2,), 0.05)
+    env.measured_gap = lambda: torch.full((2,), 0.05)
+    obj[:] = torch.tensor([[0.50, -0.20, 0.015], [0.50, -0.20, 0.015]])
+    env.metrics.spawn_xy[:] = obj[:, :2]
+    pads[:] = torch.tensor([[0.30, 0.00, 0.065], [0.30, 0.00, 0.025]])
+    far_potential = env._potential()
+    assert far_potential[0] > far_potential[1] + 0.3
+    # Once horizontally aligned over the spawn (even at 8 mm offset), open-gripper
+    # descent from hover (65 mm -> 45 mm -> 25 mm) must be strictly monotonic.
+    pads[:] = torch.tensor([[0.508, -0.20, 0.065], [0.508, -0.20, 0.045]])
+    hover_vs_mid = env._potential()
+    assert hover_vs_mid[1] > hover_vs_mid[0] + 0.8
+    pads[:] = torch.tensor([[0.508, -0.20, 0.045], [0.508, -0.20, 0.025]])
+    mid_vs_grasp = env._potential()
+    assert mid_vs_grasp[1] > mid_vs_grasp[0] + 0.9
+    # Even at an 8 mm horizontal offset at grasp height, closing from 50 -> 44 mm
+    # must increase potential while opening wider (50 -> 60 mm) must decrease it.
+    pads[:] = torch.tensor([[0.508, -0.20, 0.025], [0.508, -0.20, 0.025]])
+    env.gap_cmd = torch.tensor([0.050, 0.044])
+    env.measured_gap = lambda: torch.tensor([0.050, 0.044])
+    close_at_8mm = env._potential()
+    assert close_at_8mm[1] > close_at_8mm[0] + 0.1
+    env.gap_cmd = torch.tensor([0.050, 0.060])
+    env.measured_gap = lambda: torch.tensor([0.050, 0.060])
+    open_wider_at_8mm = env._potential()
+    assert open_wider_at_8mm[0] > open_wider_at_8mm[1] + 0.3
+    # Lowering a held cube across release_max_height over the target with a 12 mm
+    # horizontal pad grasp offset must strictly increase potential without a cliff.
+    env.metrics.ever_lifted_clear[:] = True
+    env.metrics.max_held_z[:] = 0.080
+    env.forces[:] = 2.0
+    env.gap_cmd = torch.full((2,), 0.012)
+    env.measured_gap = lambda: torch.full((2,), 0.030)
+    obj[:] = torch.tensor([[0.30, 0.30, 0.022], [0.30, 0.30, 0.017]])
+    pads[:] = obj.clone()
+    pads[:, 0] += 0.012
+    descent_across_at_table = env._potential()
+    assert descent_across_at_table[1] > descent_across_at_table[0] + 0.5
+    # Before ever_lifted_clear, lowering a held cube from 35 mm back to 15 mm must lose lift potential.
+    env.metrics.ever_lifted_clear[:] = False
+    env.metrics.max_held_z[:] = 0.035
+    obj[:] = torch.tensor([[0.50, -0.20, 0.035], [0.50, -0.20, 0.015]])
+    pads[:] = obj.clone()
+    partial_lift = env._potential()
+    assert partial_lift[0] > partial_lift[1] + 0.5
+
+
+def test_make_spawns_is_deterministic_and_within_configured_bounds():
+    import numpy as np
+    from examples.rl.pick_place.evaluate import make_spawns
+
+    first = make_spawns(64, seed=17000)
+    second = make_spawns(64, seed=17000)
+    other = make_spawns(64, seed=18001)
+    assert first.shape == (64, 2)
+    assert np.array_equal(first, second)
+    assert not np.array_equal(first, other)
+    assert np.all((first[:, 0] >= 0.30) & (first[:, 0] <= 0.50))
+    assert np.all((first[:, 1] >= -0.20) & (first[:, 1] <= 0.20))
+    assert float(np.std(first[:, 0])) > 0.03
+    assert float(np.std(first[:, 1])) > 0.06
 
 
 def test_rejected_ik_keeps_command_and_gap_remains_active(monkeypatch):

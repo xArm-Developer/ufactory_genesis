@@ -168,5 +168,5 @@ python -m examples.rl.reach.visualize \
 | `train.py`、`evaluate.py`、`visualize.py`、`run_experiments.py` | 命令行入口 |
 
 - `--recipe`、`--runtime-config` 可指定自定义文件。
-- 检查点加载时会校验运行配置哈希，修改任务配置后需重新训练。
+- 检查点加载时会校验任务配置与动作契约，修改任务配置后需重新训练。
 - 训练日志、检查点清单和缓存设置与 Pick & Place 共用 `ufactory/training` 实现。

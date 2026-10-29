@@ -72,7 +72,7 @@ class _FakeArm:
 
 
 class _FakeSdkSimArm(_FakeArm):
-    def __init__(self, physical_q: np.ndarray, *, tcp_offset=(0.0, 0.0, 172.0, 0.0, 0.0, 0.0)):
+    def __init__(self, physical_q: np.ndarray, *, tcp_offset=(0.0, 0.0, 173.5, 0.0, 0.0, 0.0)):
         super().__init__(physical_q)
         self.physical_q = np.asarray(physical_q, dtype=np.float64).copy()
         self.virtual_q = self.physical_q.copy()
@@ -277,7 +277,7 @@ def test_sdk_sim_feedback_disables_simulation_after_replay_failure(monkeypatch):
     assert ("set_simulation_robot", False) in arm.calls
 
 
-G2_TCP_OFFSET = (0.0, 0.0, 172.0, 0.0, 0.0, 0.0)
+G2_TCP_OFFSET = (0.0, 0.0, 173.5, 0.0, 0.0, 0.0)
 
 
 class _RecordingCartesianArm(_FakeArm):
@@ -306,8 +306,8 @@ def test_send_cartesian_target_applies_tcp_offset_gripper_down():
     )
     transport.send_cartesian_target(np.asarray([0.30, 0.05, 0.25]))
     sent = arm.calls[-1][1]
-    # Gripper-down flips the tool z axis, so the TCP is 172 mm below the flange.
-    assert sent[:3] == pytest.approx([300.0, 50.0, 250.0 - 172.0])
+    # Gripper-down flips the tool z axis, so the TCP is 173.5 mm below the flange.
+    assert sent[:3] == pytest.approx([300.0, 50.0, 250.0 - 173.5])
     assert abs(sent[3]) == pytest.approx(np.pi)
 
 
@@ -339,12 +339,12 @@ def test_preposition_cartesian_commands_and_checks_tcp_pose():
     xyz_err, rpy_err = transport.preposition_cartesian(np.asarray([0.30, 0.00, 0.30]))
     assert xyz_err == pytest.approx(0.0, abs=1e-9)
     assert rpy_err == pytest.approx(0.0, abs=1e-9)
-    assert np.allclose(arm.xyz_mm, [300.0, 0.0, 300.0 - 172.0])
+    assert np.allclose(arm.xyz_mm, [300.0, 0.0, 300.0 - 173.5])
 
 
 def test_ensure_cartesian_program_start_compares_tcp_feedback():
-    # Controller reports the TCP pose; the flange is at z=300 mm when TCP z=128 mm.
-    arm = _FakeArm(np.zeros(6), xyz_mm=np.asarray([300.0, 0.0, 128.0]))
+    # Controller reports the TCP pose; the flange is at z=300 mm when TCP z=126.5 mm.
+    arm = _FakeArm(np.zeros(6), xyz_mm=np.asarray([300.0, 0.0, 126.5]))
     transport = XArmTransport(
         arm,
         robot_key="xarm6_1305",
@@ -394,6 +394,6 @@ def test_sdk_sim_feedback_converts_movel_targets_to_tcp(monkeypatch, explicit_of
     cartesian = [call[1] for call in arm.calls if call[0] == "set_servo_cartesian"]
     assert cartesian
     for pose in cartesian:
-        assert pose[:3] == pytest.approx([300.0, 50.0, 250.0 - 172.0])
+        assert pose[:3] == pytest.approx([300.0, 50.0, 250.0 - 173.5])
         assert abs(pose[3]) == pytest.approx(np.pi)
     assert not arm.simulation_enabled

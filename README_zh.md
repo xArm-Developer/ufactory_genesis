@@ -1,6 +1,6 @@
 # ufactory_genesis
 
-![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Version](https://img.shields.io/badge/version-0.3.5-orange) ![Genesis](https://img.shields.io/badge/genesis-1.4.5-lightgrey) ![CI](https://github.com/xArm-Developer/ufactory_genesis/actions/workflows/ci.yml/badge.svg)
+![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Version](https://img.shields.io/badge/version-0.3.6-orange) ![Genesis](https://img.shields.io/badge/genesis-1.4.5-lightgrey) ![CI](https://github.com/xArm-Developer/ufactory_genesis/actions/workflows/ci.yml/badge.svg)
 
 基于 Genesis 的 UFACTORY 机械臂仿真与强化学习示例。
 
@@ -26,7 +26,7 @@
 在 Linux/NVIDIA GPU 上进行仿真训练与推理。学习顺序及各任务指南见 [RL 索引](examples/rl/README_zh.md)。
 
 1. **[Reach：目标到达](examples/rl/reach/README_zh.md)**：让未安装夹爪的机械臂（`xarm5`、`xarm6`、`xarm7`、`uf850`、`lite6`）末端到达目标点，成功距离严格小于 **5 mm**。支持单臂、四臂 GLB 实时推理，提供 [Hugging Face 预训练检查点](https://huggingface.co/UFACTORY-Developer/ufactory_genesis_rl)。
-2. **[Pick & Place：桌面抓放](examples/rl/pick_place/README_zh.md)**：xArm6 + Gripper G2 抓取方块并搬运到桌面目标位置。采用固定 `+Y` 布局，以纯 PPO 从零训练策略。
+2. **[Pick & Place：桌面抓放](examples/rl/pick_place/README_zh.md)**：xArm6 + Gripper G2 抓取在 `x ∈ [300, 500] mm`、`y ∈ [-200, 200] mm` 内均匀随机采样的方块并搬运到桌面固定目标位置 `(300, 300) mm`，以纯 PPO 从零训练策略。
 
 
 

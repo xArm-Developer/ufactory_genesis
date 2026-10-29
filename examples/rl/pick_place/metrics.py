@@ -10,6 +10,8 @@ import torch
 from ufactory.training.pick_place_config import (
     SPAWN_X,
     SPAWN_Y,
+    SPAWN_XY_LOWER as SPAWN_XY_LOWER,
+    SPAWN_XY_UPPER as SPAWN_XY_UPPER,
     TARGET_X,
     TARGET_Y,
     CUBE_SIZE,

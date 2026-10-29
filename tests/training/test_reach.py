@@ -107,6 +107,7 @@ def test_reach_runtime_config_uses_the_bare_arm_and_target_box(
     config = load_runtime_config(robot, task="reach")
     assert config.robot.key == canonical
     assert config.robot.urdf == urdf
+    assert config.gripper is None
     assert config.task.name == "reach"
     assert config.task.parameters["success_distance_m"] == pytest.approx(0.005)
     assert config.task.parameters["target_position_lower_m"] == lower
@@ -268,3 +269,38 @@ def test_invalid_reach_parameters_are_rejected(tmp_path: Path, text: str, match:
     path.write_text(text, encoding="utf-8")
     with pytest.raises(ConfigError, match=match):
         load_runtime_config("xarm6", task="reach", config_path=path)
+
+
+def test_reach_checkpoint_is_decoupled_from_gripper_and_global_runtime_hash(tmp_path: Path) -> None:
+    base_reach = load_runtime_config("xarm6", task="reach")
+    overridden_reach = load_runtime_config(
+        "xarm6",
+        task="reach",
+        overrides={"gripper.tool_tip_offset_z_m": 0.999},
+    )
+    assert base_reach.gripper is None
+    assert overridden_reach.gripper is None
+    assert base_reach.sha256 == overridden_reach.sha256
+
+    env, reward, robot = build_reach_task_configs("xarm6", recipe_path=RECIPE)
+    saved_env = dict(env, runtime_config_sha256="legacy_global_hash_before_g2_recalibration")
+    config = tmp_path / "config.yaml"
+    write_training_config(
+        config, task="reach", robot_key="xarm6_1305", env=saved_env, reward=reward, robot=robot, train={"seed": 7}
+    )
+    checkpoint = tmp_path / "model_299.pt"
+    torch.save({"actor_state_dict": {}, "critic_state_dict": {}}, checkpoint)
+    write_checkpoint_manifest(
+        checkpoint,
+        training_config=load_training_config(config),
+        executor_action_contract="normalized_joint_position_delta",
+    )
+    validated_cfg, manifest = validate_checkpoint_artifacts(
+        checkpoint,
+        config,
+        expected_task="reach",
+        expected_robot_key="xarm6_1305",
+        expected_runtime_env=env,
+    )
+    assert validated_cfg["task"] == "reach"
+    assert manifest.robot_key == "xarm6_1305"

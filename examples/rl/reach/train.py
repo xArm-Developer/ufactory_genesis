@@ -103,7 +103,6 @@ def main() -> None:
             map_location="cpu",
             expected_task="reach",
             expected_robot_key=runtime_config.robot.key,
-            expected_runtime_config_sha256=runtime_config.sha256,
             expected_runtime_env=env_cfg,
         )
 

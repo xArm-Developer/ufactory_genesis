@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] — 2026-10-29
+
+### Changed
+
+- Updated `examples/rl/pick_place` to sample initial cube positions uniformly at random in `x ∈ [300, 500] mm`, `y ∈ [-200, 200] mm` (`SPAWN_XY_LOWER = (0.300, -0.200)`, `SPAWN_XY_UPPER = (0.500, 0.200)`) with a fixed target at `(300, 300) mm`, added `spawn_xy_lower` / `spawn_xy_upper` to the pick-place runtime environment contract, computed horizontal drag and transport potential shaping relative to each episode's actual spawn `init_obj_pos`, updated `PickPlaceExpert` and `evaluate.py`'s CPU-deterministic `make_spawns()` generator across the full workspace envelope, and refreshed the bilingual guides (`examples/rl/pick_place/README.md`, `README_zh.md`).
+- Decoupled bare-arm `reach` runtime configurations and checkpoint contract validation from gripper parameters: `load_runtime_config(..., task="reach")` sets `gripper = None`, and `_REACH_RUNTIME_ENV_CONTRACT_KEYS` validates the 21 Reach-specific environment and solver parameters without coupling to the global `runtime_config_sha256`.
+- Upgraded transitive `msgpack` from `1.2.1` to `1.2.4` in `uv.lock` (resolving `CVE-2026-114613`) and added two new `pillow 11.3.0` advisory aliases (`PYSEC-2026-4327`, `PYSEC-2026-4332`) to `PIP_AUDIT_IGNORED_VULNS`.
+
+### Fixed
+
+- Recalibrated Gripper G2 meshes, URDF kinematics, and runtime TCP offsets against the official SolidWorks STEP assembly (`Gripper G2 AG1200 20250710.STEP`):
+  - Rebuilt all 8 Draco-compressed visual GLBs (`501.0 KB` total across 7 movable links, `386.8 KB` static assembly) and 7 collision STLs under `assets/urdf/gripper_g2/meshes/` directly in their canonical flange/joint reference frames, eliminating legacy G1 housing mix-ups and centroid-fit visual offsets (`0.00000 mm` axial error and `<= 0.00044 mm` opening error across all 85 poses `0–84 mm`).
+  - Updated all 11 standard Gripper G2 URDFs (`drive_joint` and `right_outer_knuckle_joint` Z `0.059098` → `0.0606 m`, `left/right_inner_knuckle_joint` Z `0.074098` → `0.075602 m`, `joint_tcp` Z `0.172` → `0.1735 m`) and zeroed residual `<visual><origin>` offsets on `xarm5` and `xarm7` G2 combo URDFs.
+  - Updated `gripper.tool_tip_offset_z_m` from `0.1011` to `0.1026` across `assets/configs/runtime/robots/{xarm5_1305,xarm6_1305,xarm7_1305,uf850}.yaml`.
+
 ## [0.3.5] — 2026-10-27
 
 ### Added

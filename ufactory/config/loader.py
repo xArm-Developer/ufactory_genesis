@@ -153,7 +153,9 @@ def _build_resolved(data: dict[str, Any], sources: tuple[str, ...]) -> ResolvedR
     )
     if any(lo >= hi for lo, hi in zip(arm.force_lower_nm, arm.force_upper_nm, strict=True)):
         raise ConfigError("each arm force lower bound must be below its upper bound")
-    gripper_data = data.get("gripper")
+    task_data = data["task"]
+    task_name = str(task_data["name"])
+    gripper_data = None if task_name == "reach" else data.get("gripper")
     gripper = None
     if gripper_data is not None:
         gripper = GripperProfile(
@@ -181,8 +183,6 @@ def _build_resolved(data: dict[str, Any], sources: tuple[str, ...]) -> ResolvedR
             grasp_table_clearance_m=float(gripper_data["grasp_table_clearance_m"]),
             grasp_height_extra_m=float(gripper_data["grasp_height_extra_m"]),
         )
-    task_data = data["task"]
-    task_name = str(task_data["name"])
     task_parameters = task_data["parameters"]
     if not isinstance(task_parameters, Mapping):
         raise ConfigError("task.parameters must be a mapping")

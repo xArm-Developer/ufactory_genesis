@@ -16,6 +16,8 @@ from ufactory.training.pick_place_config import (
     PICK_PLACE_ENV_VERSION,
     PICK_PLACE_NUM_ACTIONS,
     PICK_PLACE_NUM_OBS,
+    SPAWN_XY_LOWER,
+    SPAWN_XY_UPPER,
 )
 
 PICK_PLACE_RL_ROBOTS = ("xarm6", "xarm6_1305")
@@ -177,6 +179,8 @@ def build_pick_place_task_configs(
             "g2_physics": g2_physics_summary(simulation=config.simulation, rate_hz=1 / float(params["control_dt_s"])),
             "episode_length_s": float(params["episode_length_s"]),
             "ctrl_dt": float(params["control_dt_s"]),
+            "spawn_xy_lower": list(SPAWN_XY_LOWER),
+            "spawn_xy_upper": list(SPAWN_XY_UPPER),
             "workspace_lower": list(params["workspace_lower_m"]),
             "workspace_upper": list(params["workspace_upper_m"]),
             "substeps": int(config.simulation.substeps),

@@ -32,6 +32,8 @@ def test_pick_place_binds_the_resolved_runtime_hash() -> None:
     assert rl_config.sha256 == load_runtime_config("xarm6", task="pick_place").sha256
     assert grasp_env["num_obs"] == 70
     assert grasp_env["num_actions"] == 4
+    assert grasp_env["spawn_xy_lower"] == pytest.approx([0.30, -0.20])
+    assert grasp_env["spawn_xy_upper"] == pytest.approx([0.50, 0.20])
     assert grasp_env["workspace_lower"] == pytest.approx([0.10, -0.35, -0.02])
     assert grasp_env["workspace_upper"] == pytest.approx([0.65, 0.35, 0.55])
 

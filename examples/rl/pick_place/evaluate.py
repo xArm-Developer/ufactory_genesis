@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 import csv
 import hashlib
@@ -35,11 +35,20 @@ from ufactory.training import (
 
 from .env import SUBSTEPS, XArm6PickPlaceEnv
 from .expert import PickPlaceExpert
-from .metrics import SPAWN_X, SPAWN_Y
+from .metrics import SPAWN_XY_LOWER, SPAWN_XY_UPPER
 
 
-def make_spawns(episodes: int) -> np.ndarray:
-    return np.tile(np.array([[SPAWN_X, SPAWN_Y]], dtype=np.float32), (episodes, 1))
+def make_spawns(
+    episodes: int,
+    seed: int = 17000,
+    lower: Sequence[float] = SPAWN_XY_LOWER,
+    upper: Sequence[float] = SPAWN_XY_UPPER,
+) -> np.ndarray:
+    """Use a dedicated CPU generator so evaluation spawns do not depend on batch size or GPU."""
+    generator = torch.Generator(device="cpu").manual_seed(int(seed))
+    lo = torch.tensor(lower, dtype=torch.float32, device="cpu")
+    hi = torch.tensor(upper, dtype=torch.float32, device="cpu")
+    return (lo + torch.rand(int(episodes), 2, generator=generator, device="cpu") * (hi - lo)).numpy()
 
 
 def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -89,9 +98,8 @@ def checkpoint_score(summary: dict[str, Any]) -> tuple[float, float, float, floa
     """Prefer strict success, then low release, then target touchdown, then less pressing, then landing error."""
     no_high = 1.0 - float(summary.get("high_release_rate", 0.0))
     low_release = float(summary.get("release_confirmed_rate", 0.0)) * no_high
-    target_touchdown = (
-        float(summary.get("touchdown_seen_rate", 1.0)) * no_high * float(summary["target_error_mm"]["mean"] <= 20.0)
-    )
+    low_touchdown_or_success = max(float(summary["success_rate"]), float(summary.get("touchdown_seen_rate", 1.0)))
+    target_touchdown = low_touchdown_or_success * no_high * float(summary["target_error_mm"]["mean"] <= 20.0)
     return (
         float(summary["success_rate"]),
         low_release,
@@ -111,7 +119,13 @@ def evaluate(
     episodes: int = 64,
     seed: int = 17000,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    obs, _ = env.set_evaluation_spawns(make_spawns(episodes))
+    spawns = make_spawns(
+        episodes,
+        seed=seed,
+        lower=env.cfg.get("spawn_xy_lower", SPAWN_XY_LOWER),
+        upper=env.cfg.get("spawn_xy_upper", SPAWN_XY_UPPER),
+    )
+    obs, _ = env.set_evaluation_spawns(spawns)
     if policy is None:
         policy = PickPlaceExpert(env)
     records: dict[int, dict[str, Any]] = {}
@@ -135,6 +149,7 @@ def evaluate(
     summary["seconds"] = elapsed
     summary["transitions_per_second"] = (env.total_env_steps - start_steps) / elapsed
     summary["seed"] = int(seed)
+    summary["spawn_sha256"] = hashlib.sha256(spawns.tobytes()).hexdigest()
     summary["device"] = str(env.device)
     summary["env_version"] = int(env.cfg["env_version"])
     return summary, rows
