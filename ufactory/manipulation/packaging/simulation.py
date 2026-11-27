@@ -75,6 +75,8 @@ class ShowcaseRobotCtx:
     home_settle_steps: int = SETTLE_STEPS
     g2_controller: object | None = None
     robotiq_controller: object | None = None
+    sim_dt: float = SIM_DT
+    arm_controller: object | None = None
 
 
 def _scale_steps(steps: int, speed: float) -> int:
@@ -215,11 +217,22 @@ def _init_home_qpos(
     home_pos,
     *,
     gripper_open_drive: float,
+    arm_controller=None,
+    target_pos_base=None,
+    default_qpos_rad=None,
 ):
     home_link6_pos = torch.tensor([home_pos], device=gs.device, dtype=gs.tc_float)
     init_qpos = torch.zeros(1, robot.n_dofs, device=gs.device, dtype=gs.tc_float)
     home_qpos_result = solve_home_ik(
-        robot, ik_link, home_link6_pos, down_quat, arm_dof_idx=arm_dof_idx, init_qpos=init_qpos
+        robot,
+        ik_link,
+        home_link6_pos,
+        down_quat,
+        arm_dof_idx=arm_dof_idx,
+        init_qpos=init_qpos,
+        arm_controller=arm_controller,
+        target_pos_base=target_pos_base,
+        default_qpos_rad=default_qpos_rad,
     )
     for i, idx in enumerate(arm_dof_idx):
         init_qpos[:, idx] = home_qpos_result[0, arm_dof_idx[i]]
@@ -270,6 +283,25 @@ def init_showcase_robot(
     else:
         open_drive = float(gripper.open_drive)
     home_pos = _world_home(layout, cartesian_xy_offset_m=cartesian_xy_offset_m)
+    offset_x, offset_y = (
+        layout.simulation_grasp_center_compensation_xy if cartesian_xy_offset_m is None else cartesian_xy_offset_m
+    )
+    home_pos_base = (
+        float(layout.home_position_base[0]) + float(offset_x),
+        float(layout.home_position_base[1]) + float(offset_y),
+        float(layout.home_position_base[2]),
+    )
+    urdf_model_path = getattr(robot, "_ufactory_model_path", "")
+    arm_controller = None
+    if urdf_model_path:
+        from ufactory.control import ArmMotionController
+
+        arm_controller = ArmMotionController.from_robot(
+            config.robot.key,
+            urdf_path=urdf_model_path,
+            servo_rate_hz=float(config.motion.rate_hz),
+            allow_approx_motion=bool(config.motion.allow_approx_motion),
+        )
     home_qpos_saved = _init_home_qpos(
         robot,
         ik_link,
@@ -278,6 +310,9 @@ def init_showcase_robot(
         down_quat,
         home_pos,
         gripper_open_drive=open_drive,
+        arm_controller=arm_controller,
+        target_pos_base=home_pos_base,
+        default_qpos_rad=config.arm.default_qpos_rad,
     )
     scene.step()
     finger_z_offset = _measure_finger_offset(ik_link, left_finger, right_finger)
@@ -309,21 +344,24 @@ def init_showcase_robot(
         gripper_initial_open_clearance_m=0.0,
         g2_controller=adapter,
         robotiq_controller=robotiq_adapter,
-        home_settle_steps=max(1, int(round(task_layout.simulation_home_settle_s * config.motion.rate_hz))),
+        home_settle_steps=max(1, int(round(task_layout.simulation_home_settle_s * config.simulation.rate_hz))),
+        sim_dt=1.0 / float(config.simulation.rate_hz),
+        arm_controller=arm_controller,
     )
 
 
 def hold_robot_home(robot, scene, ctx: ShowcaseRobotCtx, *, steps: int = 1) -> None:
     target_qpos = ctx.home_qpos_saved
     gripper_open = torch.full((1, 1), ctx.gripper_open_drive, device=gs.device, dtype=gs.tc_float)
+    step_dt = float(getattr(ctx, "sim_dt", SIM_DT))
     for _ in range(steps):
         robot.control_dofs_position(target_qpos[:, ctx.arm_dof_idx], ctx.arm_dof_idx)
         if ctx.g2_controller is not None:
             ctx.g2_controller.command(84)
-            ctx.g2_controller.apply(SIM_DT)
+            ctx.g2_controller.apply(step_dt)
         elif ctx.robotiq_controller is not None:
             ctx.robotiq_controller.command(ctx.robotiq_controller.model.spec.open_gap_mm)
-            ctx.robotiq_controller.apply(SIM_DT)
+            ctx.robotiq_controller.apply(step_dt)
         else:
             robot.control_dofs_position(gripper_open, ctx.gripper_dof_idx)
         scene.step()
@@ -497,6 +535,7 @@ def _trajectory_context(
         robotiq_controller=ctx.robotiq_controller,
         simulation_parameters={
             "rate_hz": config.motion.rate_hz,
+            "sim_rate_hz": float(config.simulation.rate_hz),
             "substeps": config.simulation.substeps,
             "constraint_time_constant_s": config.simulation.constraint_time_constant_s,
             "constraint_solver": config.simulation.constraint_solver,
@@ -506,6 +545,8 @@ def _trajectory_context(
             "contact_resolution": config.simulation.contact_resolution,
             "use_gjk_collision": config.simulation.use_gjk_collision,
         },
+        sim_rate_hz=float(config.simulation.rate_hz),
+        arm_controller=getattr(ctx, "arm_controller", None),
     )
 
 
@@ -733,7 +774,7 @@ def _run_packaging_sim_body(args: PackagingSimulationOptions, runtime_config) ->
     )
     scene, robot, block, layout = build_packaging_scene(
         table_top_z,
-        sim_dt=SIM_DT,
+        sim_dt=1.0 / float(runtime_config.simulation.rate_hz),
         build_scene=True,
         show_viewer=False,
         runtime_config=runtime_config,

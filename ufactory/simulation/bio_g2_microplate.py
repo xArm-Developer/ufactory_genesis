@@ -11,7 +11,7 @@ import numpy as np
 from ufactory.robots.registry import PROJECT_ROOT
 from ufactory.simulation.bio_g2_model import sha256
 
-ASSET_DIR = PROJECT_ROOT / "assets" / "urdf" / "microplate"
+ASSET_DIR = PROJECT_ROOT / "assets" / "urdf" / "objects" / "microplate"
 PLATE_JSON_PATH = ASSET_DIR / "SBS_96_well_plate.json"
 PLATE_URDF = ASSET_DIR / "sbs_96_well.urdf"
 PLATE_MASS_KG = 0.100

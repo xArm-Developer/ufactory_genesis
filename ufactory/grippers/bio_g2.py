@@ -46,6 +46,25 @@ _DEFAULT_HOLD_STEPS = 200
 BIO_GRIPPER_G2_DEMO_HOLD_S = 0.5
 BIO_GRIPPER_G2_ARRIVAL_TOL_MM = 1.0
 
+# TCP (gripping-ridge centre at bio_gripper_g2_tcp_link) expressed in the xArm flange frame (link6), metres.
+BIO_GRIPPER_G2_TCP_IN_FLANGE_M: tuple[float, float, float] = (0.15764, 0.0, 0.05752)
+
+BIO_G2_BLOCKED_MODES = frozenset(("sdk-sim", "real"))
+BIO_G2_CONTROLLER_VALIDATED = frozenset({("pick_place", "xarm6")})
+
+
+def bio_g2_controller_mode_error(task: str, robot: str, gripper: str, mode: str) -> str | None:
+    """CLI error for Bio Gripper G2 in a controller mode not yet hardware-validated, else ``None``."""
+    if gripper != "bio_gripper_g2" or mode not in BIO_G2_BLOCKED_MODES:
+        return None
+    if (task, robot) in BIO_G2_CONTROLLER_VALIDATED:
+        return None
+    validated = ", ".join(f"{t} on {r}" for t, r in sorted(BIO_G2_CONTROLLER_VALIDATED))
+    return (
+        f"--gripper bio_gripper_g2 currently requires --mode sim or dry-run for {task} on {robot}: "
+        f"Bio Gripper G2 on a real controller has only been validated on hardware for {validated}"
+    )
+
 
 def clamp_bio_gripper_g2_gap_m(gap_m: float) -> float:
     """Clamp a two-finger gap in metres to the Bio Gripper G2 physical range [0.071, 0.150]."""

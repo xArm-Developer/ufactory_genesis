@@ -1,0 +1,33 @@
+schema_version: 1
+robot:
+  urdf: assembly:vacuum_gripper
+task:
+  parameters:
+    fixed_object_position_m: [0.30, 0.00, 0.015]
+    fixed_target_position_m: [0.30, 0.25, 0.015]
+    default_ee_position_m: [0.30, 0.00, 0.30]
+gripper:
+  adapter: vacuum_gripper
+  drive_joint: ""
+  all_joint_names: []
+  finger_link_names: []
+  open_drive: 0.0
+  closed_drive: 0.0
+  open_gap_m: 1.0
+  closed_gap_m: 0.0
+  kp: 0.0
+  kv: 0.0
+  force_lower_n: 0.0
+  force_upper_n: 0.0
+  damping: 0.0
+  frictionloss: 0.0
+  real_command: true
+  feedback: false
+  closed_loop: false
+  allowed_contact_links: [xarm_vacuum_gripper_link]
+  tool_tip_offset_z_m: 0.126
+  finger_pad_below_center_m: 0.0
+  finger_close_descent_m: 0.0
+  grasp_table_clearance_m: 0.050
+  grasp_height_extra_m: 0.0
+  tcp_offset: [0.0, 0.0, 126.0, 0.0, 0.0, 0.0]

@@ -46,7 +46,14 @@ class _PinocchioModel:
         self.urdf_path = Path(urdf_path).expanduser().resolve()
         if not self.urdf_path.is_file():
             raise FileNotFoundError(self.urdf_path)
-        self.model = pin.buildModelFromUrdf(str(self.urdf_path), mimic=True)
+        try:
+            self.model = pin.buildModelFromUrdf(str(self.urdf_path), mimic=True)
+            self._mimic_fallback = False
+        except ValueError as exc:
+            if "mimic" not in str(exc).lower():
+                raise
+            self.model = pin.buildModelFromUrdf(str(self.urdf_path))
+            self._mimic_fallback = True
         self.data = self.model.createData()
         self.joint_names = joint_names
         self.ee_link = ee_link
@@ -78,6 +85,39 @@ class _PinocchioModel:
                 index = int(joint.idx_q)
                 self.passive_q_indices[name] = index
                 self.neutral[index] = float(value)
+        self._mimic_map: tuple[tuple[int, int, float, float], ...] = (
+            self._parse_mimic_map() if self._mimic_fallback else ()
+        )
+        if self._mimic_fallback:
+            self._apply_mimic_map(self.neutral)
+
+    def _parse_mimic_map(self) -> tuple[tuple[int, int, float, float], ...]:
+        root = ET.parse(self.urdf_path).getroot()
+        mappings: list[tuple[int, int, float, float]] = []
+        for joint_elem in root.findall("joint"):
+            mimic_elem = joint_elem.find("mimic")
+            if mimic_elem is None:
+                continue
+            child_name = joint_elem.get("name") or ""
+            parent_name = mimic_elem.get("joint") or ""
+            if not child_name or not parent_name:
+                continue
+            child_id = int(self.model.getJointId(child_name))
+            parent_id = int(self.model.getJointId(parent_name))
+            if child_id == 0 or parent_id == 0:
+                continue
+            child_joint = self.model.joints[child_id]
+            parent_joint = self.model.joints[parent_id]
+            if child_joint.nq != 1 or parent_joint.nq != 1:
+                continue
+            multiplier = float(mimic_elem.get("multiplier", "1"))
+            offset = float(mimic_elem.get("offset", "0"))
+            mappings.append((int(child_joint.idx_q), int(parent_joint.idx_q), multiplier, offset))
+        return tuple(mappings)
+
+    def _apply_mimic_map(self, q: np.ndarray) -> None:
+        for child_idx, parent_idx, multiplier, offset in self._mimic_map:
+            q[child_idx] = multiplier * q[parent_idx] + offset
 
     def full_q(self, q_rad: np.ndarray, *, gripper_drive: float | None = None) -> np.ndarray:
         values = np.asarray(q_rad, dtype=np.float64).reshape(-1)
@@ -89,6 +129,8 @@ class _PinocchioModel:
             if len(self.passive_q_indices) != 1:
                 raise ValueError("gripper_drive requires exactly one configured passive drive joint")
             q[next(iter(self.passive_q_indices.values()))] = float(gripper_drive)
+        if self._mimic_fallback:
+            self._apply_mimic_map(q)
         return q
 
     def xyz(self, q_rad: np.ndarray) -> np.ndarray:

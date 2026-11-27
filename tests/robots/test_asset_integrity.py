@@ -65,9 +65,9 @@ def test_public_urdf_mesh_references_exist() -> None:
         for accessory in accessories()
         for visual in ("glb", "stl")
     ]
-    urdfs += [_URDF_ROOT / "robotiq_mounting" / "robotiq_mounting.urdf"]
+    urdfs += [_URDF_ROOT / "mounts" / "robotiq_mounting" / "robotiq_mounting.urdf"]
     urdfs += [
-        _URDF_ROOT / f"{plate}/{plate}.urdf"
+        _URDF_ROOT / f"mounts/{plate}/{plate}.urdf"
         for plate in ("xarm_mounting_plate", "uf850_mounting_plate", "lite6_mounting_plate")
     ]
     urdfs += [
@@ -179,7 +179,7 @@ def test_standard_g2_urdf_joint_origins_and_mesh_alignment() -> None:
                         assert _rounded_xyz(orig.get("xyz")) == (0.0, 0.0, 0.0), (path, lname, tag)
                         assert _rounded_xyz(orig.get("rpy")) == (0.0, 0.0, 0.0), (path, lname, tag)
 
-    pkg = PROJECT_ROOT / "assets" / "urdf" / "gripper_g2" / "meshes"
+    pkg = PROJECT_ROOT / "assets" / "urdf" / "end_effectors" / "gripper_g2" / "meshes"
     base_stl = _mesh_vertices(pkg / "visual" / "base_link.stl", trimesh)
     base_glb = _mesh_vertices(pkg / "visual" / "visual_glb" / "base.glb", trimesh)
     lf_glb = _mesh_vertices(pkg / "visual" / "visual_glb" / "left_finger.glb", trimesh)
@@ -208,7 +208,7 @@ def test_standard_g2_urdf_joint_origins_and_mesh_alignment() -> None:
         assert actual_axial_mm == pytest.approx(expected_axial_mm, abs=0.01)
 
 
-_G2_PART = _URDF_ROOT / "gripper_g2" / "gripper_g2_movable_visual.urdf"
+_G2_PART = _URDF_ROOT / "end_effectors" / "gripper_g2" / "gripper_g2_movable_visual.urdf"
 _G2_BASE_GEOMETRY = ("visual/visual_glb/base.glb", "visual/base_link.stl", "collision hulls")
 
 
@@ -235,7 +235,7 @@ def _g2_base_triangles(geometry: str) -> np.ndarray:
     if geometry == "collision hulls":
         names = _collision_meshes_by_link(_G2_PART)["xarm_gripper_base_link"]
         return np.concatenate([_triangles((_G2_PART.parent / name).resolve()) for name in names])
-    return _triangles(_URDF_ROOT / "gripper_g2" / "meshes" / geometry)
+    return _triangles(_URDF_ROOT / "end_effectors" / "gripper_g2" / "meshes" / geometry)
 
 
 def _section_mm(triangles_mm: np.ndarray, z_mm: float) -> np.ndarray:
@@ -282,7 +282,9 @@ def test_gripper_g2_base_collides_as_ten_convex_hulls() -> None:
     for name, mesh in zip(names, hulls):
         assert mesh.is_watertight and 1.0 - mesh.volume / mesh.convex_hull.volume <= 1e-5, name
     assert sum(mesh.volume for mesh in hulls) * 1e6 == pytest.approx(353.2, abs=0.1)
-    visual = _triangles(_URDF_ROOT / "gripper_g2" / "meshes" / "visual" / "base_link.stl").reshape(-1, 3)
+    visual = _triangles(_URDF_ROOT / "end_effectors" / "gripper_g2" / "meshes" / "visual" / "base_link.stl").reshape(
+        -1, 3
+    )
     np.testing.assert_allclose(np.min([m.bounds[0] for m in hulls], axis=0), visual.min(axis=0), atol=1e-5)
     np.testing.assert_allclose(np.max([m.bounds[1] for m in hulls], axis=0), visual.max(axis=0), atol=1e-5)
 
@@ -308,8 +310,10 @@ def test_gripper_g2_base_flange_uses_the_arm_flange_material() -> None:
     """The G2 base GLB shows the flange, centring boss and locating pin in the xArm / UF850 flange material, the +Y
     connector cover in the fingers' black, and the bearing cover between the fingers (plus its four M3x8 screws) in
     matte black anodized aluminium; only the outer housing stays white."""
-    parts = _glb_material_triangles(_URDF_ROOT / "gripper_g2/meshes/visual/visual_glb/base.glb")
-    finger = _glb_material_triangles(_URDF_ROOT / "gripper_g2/meshes/visual/visual_glb/left_finger.glb")[0][0]
+    parts = _glb_material_triangles(_URDF_ROOT / "end_effectors/gripper_g2/meshes/visual/visual_glb/base.glb")
+    finger = _glb_material_triangles(_URDF_ROOT / "end_effectors/gripper_g2/meshes/visual/visual_glb/left_finger.glb")[
+        0
+    ][0]
     assert len(parts) == 4
     [(flange_pbr, flange)] = [(m, t) for m, t in parts if m.metallicFactor > 0.5 and m.baseColorFactor[0] > 0.5]
     [(bearing_pbr, bearing)] = [(m, t) for m, t in parts if m.metallicFactor > 0.5 and m.baseColorFactor[0] < 0.25]
@@ -325,7 +329,10 @@ def test_gripper_g2_base_flange_uses_the_arm_flange_material() -> None:
     assert bearing[..., 2].min() == pytest.approx(92.94, abs=0.05)
     assert bearing[..., 2].max() == pytest.approx(101.94, abs=0.05)
 
-    for arm_glb in ("xarm6/meshes/xarm6_1305/visual_glb/link6.glb", "uf850/meshes/uf850/visual_glb/link6.glb"):
+    for arm_glb in (
+        "robots/xarm6/meshes/xarm6_1305/visual_glb/link6.glb",
+        "robots/uf850/meshes/uf850/visual_glb/link6.glb",
+    ):
         (arm_pbr,) = [m for m, _ in _glb_material_triangles(_URDF_ROOT / arm_glb) if m.metallicFactor > 0.5]
         np.testing.assert_allclose(flange_pbr.baseColorFactor, arm_pbr.baseColorFactor, atol=1e-6)
         assert flange_pbr.metallicFactor == pytest.approx(arm_pbr.metallicFactor, abs=1e-6)
@@ -365,12 +372,12 @@ def test_gripper_g2_finger_pads_use_white_translucent_silicone() -> None:
     pygltflib = pytest.importorskip("pygltflib")
     cover_black = [
         m.baseColorFactor
-        for m, _ in _glb_material_triangles(_URDF_ROOT / "gripper_g2/meshes/visual/visual_glb/base.glb")
+        for m, _ in _glb_material_triangles(_URDF_ROOT / "end_effectors/gripper_g2/meshes/visual/visual_glb/base.glb")
         if m.metallicFactor == 0.0 and m.baseColorFactor != [1.0, 1.0, 1.0, 1.0]
     ][0]
 
     for side in ("left", "right"):
-        glb_path = _URDF_ROOT / f"gripper_g2/meshes/visual/visual_glb/{side}_finger.glb"
+        glb_path = _URDF_ROOT / f"end_effectors/gripper_g2/meshes/visual/visual_glb/{side}_finger.glb"
         glb = pygltflib.GLTF2().load(str(glb_path))
         assert glb.materials[glb.meshes[0].primitives[0].material].alphaMode in (None, "OPAQUE")
         assert glb.materials[glb.meshes[1].primitives[0].material].alphaMode == "BLEND"
@@ -398,7 +405,7 @@ def test_gripper_g2_finger_pads_use_white_translucent_silicone() -> None:
 def test_gripper_g2_locating_pin_is_round_and_slotted(geometry: str) -> None:
     """The locating pin at (0, -25) mm is a round dome-tipped cylinder (r = 2.98 mm, tip z = -4.50 mm)
     with a 1.00 mm wide x 2.00 mm deep slot at the STEP yaw (-0.12283004 rad)."""
-    tri_mm = _triangles(_URDF_ROOT / "gripper_g2" / "meshes" / geometry) * 1000.0
+    tri_mm = _triangles(_URDF_ROOT / "end_effectors" / "gripper_g2" / "meshes" / geometry) * 1000.0
     pin_axis = np.array([0.0, -25.0])
     tri_r = np.hypot(tri_mm[:, :, 0] - pin_axis[0], tri_mm[:, :, 1] - pin_axis[1])
     pin_tri = tri_mm[(tri_r.max(axis=1) <= 3.1) & (tri_mm[:, :, 2].min(axis=1) < -0.05)]
@@ -447,7 +454,7 @@ _G2_FLANGE_CIRCLES = (
 @pytest.mark.parametrize("geometry", ("visual/visual_glb/base.glb", "visual/base_link.stl"))
 def test_gripper_g2_flange_and_boss_circles_are_round(geometry: str) -> None:
     """The centring boss, mounting flange, pin hole, and +Y connector cover have smooth analytic circular surfaces."""
-    tri_mm = _triangles(_URDF_ROOT / "gripper_g2" / "meshes" / geometry) * 1000.0
+    tri_mm = _triangles(_URDF_ROOT / "end_effectors" / "gripper_g2" / "meshes" / geometry) * 1000.0
     fn = np.cross(tri_mm[:, 1] - tri_mm[:, 0], tri_mm[:, 2] - tri_mm[:, 0])
     fn_norm = np.linalg.norm(fn, axis=1)
     valid = fn_norm > 1e-10
@@ -487,7 +494,7 @@ def test_gripper_g2_flange_and_boss_circles_are_round(geometry: str) -> None:
     if geometry.endswith(".glb"):
         DracoPy = pytest.importorskip("DracoPy")
         pygltflib = pytest.importorskip("pygltflib")
-        glb = pygltflib.GLTF2().load(str(_URDF_ROOT / "gripper_g2" / "meshes" / geometry))
+        glb = pygltflib.GLTF2().load(str(_URDF_ROOT / "end_effectors" / "gripper_g2" / "meshes" / geometry))
         blob = glb.binary_blob()
         pts_chunks, nrm_chunks = [], []
         for mesh in glb.meshes:
@@ -561,7 +568,7 @@ _REGISTERED_ARMS: dict[str, tuple[int, str, str]] = {
 def _registered_arm_urdfs(robot_dir: str) -> list[Path]:
     """Tracked arm URDFs (dynamics + GLB visual) and every composed assembly of that arm."""
     _, mesh_prefix, key = _REGISTERED_ARMS[robot_dir]
-    urdf_dir = _URDF_ROOT / robot_dir
+    urdf_dir = _URDF_ROOT / "robots" / robot_dir
     tracked = [urdf_dir / f"{mesh_prefix}.urdf", urdf_dir / f"{mesh_prefix}_visual.glb.urdf"]
     assert sorted(p.name for p in urdf_dir.glob("*.urdf")) == sorted(p.name for p in tracked), robot_dir
     return tracked + _assembly_urdfs(robot=key)
@@ -581,8 +588,8 @@ _BIO_GRIPPER_G2_COLLISION_ORIGINS = {
 }
 
 _BIO_GRIPPER_G2_PARTS = (
-    _URDF_ROOT / "bio_gripper_g2" / "bio_gripper_g2.urdf",
-    _URDF_ROOT / "bio_gripper_g2" / "bio_gripper_g2_movable_visual.urdf",
+    _URDF_ROOT / "end_effectors" / "bio_gripper_g2" / "bio_gripper_g2.urdf",
+    _URDF_ROOT / "end_effectors" / "bio_gripper_g2" / "bio_gripper_g2_movable_visual.urdf",
 )
 
 
@@ -793,7 +800,7 @@ _EXPECTED_ARM_COLLISION_COUNTS: dict[str, dict[str, int]] = {
         "link3": 2,
         "link4": 4,
         "link5": 1,
-        "link6": 1,
+        "link6": 3,
     },
     "uf850": {
         "link_base": 3,
@@ -839,6 +846,7 @@ def test_registered_arm_collision_meshes_use_visual_stl() -> None:
                 expected = [
                     str(
                         _URDF_ROOT
+                        / "robots"
                         / src_dir
                         / f"meshes/{_REGISTERED_ARMS[src_dir][1]}/collision/{src_dir}_{src_link}_col_{idx:02d}.stl"
                     )
@@ -925,8 +933,8 @@ def _placed_meshes(urdf: Path, link_name: str, tag: str) -> list[tuple[np.ndarra
 @pytest.mark.parametrize("variant", _XARM_URDF_VARIANTS)
 def test_xarm5_is_xarm6_with_j4_locked(variant: str) -> None:
     """xArm5 link frames and placed meshes equal xArm6's at J4 = 0 (xArm5 J4/J5 are xArm6 J5/J6)."""
-    xarm5 = _URDF_ROOT / "xarm5" / variant.format("xarm5")
-    xarm6 = _URDF_ROOT / "xarm6" / variant.format("xarm6")
+    xarm5 = _URDF_ROOT / "robots" / "xarm5" / variant.format("xarm5")
+    xarm6 = _URDF_ROOT / "robots" / "xarm6" / variant.format("xarm6")
     frames = {link: _part_sources("xarm5", link)[0][1] for link in _arm_link_names(5)}
     for q in np.random.default_rng(0).uniform(-np.pi, np.pi, size=(8, 5)):
         poses5 = _link_poses(xarm5, {f"joint{i}": float(v) for i, v in zip((1, 2, 3, 4, 5), q)})
@@ -949,12 +957,12 @@ def test_xarm5_is_xarm6_with_j4_locked(variant: str) -> None:
 def test_shared_arm_links_reuse_the_source_link_meshes(variant: str) -> None:
     """A shared link with a single source carries exactly the source link's visuals and collisions."""
     for robot_dir, links in _ARM_PART_SOURCES.items():
-        urdf = _URDF_ROOT / robot_dir / variant.format(robot_dir)
+        urdf = _URDF_ROOT / "robots" / robot_dir / variant.format(robot_dir)
         for link, sources in links.items():
             if len(sources) != 1:
                 continue
             ((src_dir, src_link),) = sources
-            source = _URDF_ROOT / src_dir / variant.format(src_dir)
+            source = _URDF_ROOT / "robots" / src_dir / variant.format(src_dir)
             for tag in ("visual", "collision"):
                 got, want = _placed_meshes(urdf, link, tag), _placed_meshes(source, src_link, tag)
                 assert [path for _, path in got] == [path for _, path in want], (robot_dir, link, tag)
@@ -967,13 +975,16 @@ def test_xarm_bases_use_the_production_base() -> None:
     trimesh = pytest.importorskip("trimesh")
     pytest.importorskip("DracoPy")
     pytest.importorskip("pygltflib")
-    meshes = _URDF_ROOT / "xarm6" / "meshes" / "xarm6_1305"
+    meshes = _URDF_ROOT / "robots" / "xarm6" / "meshes" / "xarm6_1305"
     stl, glb = meshes / "visual" / "link_base.stl", meshes / "visual_glb" / "link_base.glb"
     for robot_dir in ("xarm5", "xarm6", "xarm7"):
         for variant, visual in zip(_XARM_URDF_VARIANTS, (stl, glb)):
-            urdf = _URDF_ROOT / robot_dir / variant.format(robot_dir)
+            urdf = _URDF_ROOT / "robots" / robot_dir / variant.format(robot_dir)
             assert [path for _, path in _placed_meshes(urdf, "link_base", "visual")] == [visual], _rel(urdf)
-    hulls = [path for _, path in _placed_meshes(_URDF_ROOT / "xarm6" / "xarm6_1305.urdf", "link_base", "collision")]
+    hulls = [
+        path
+        for _, path in _placed_meshes(_URDF_ROOT / "robots" / "xarm6" / "xarm6_1305.urdf", "link_base", "collision")
+    ]
     stl_top = _mesh_vertices(stl, trimesh)[:, 2].max()
     assert stl_top == pytest.approx(0.15035, abs=5e-5)
     assert _mesh_vertices(glb, trimesh)[:, 2].max() == pytest.approx(stl_top, abs=1e-4)
@@ -998,7 +1009,7 @@ def test_xarm_bases_share_unified_inertial_parameters() -> None:
     serialized: list[str] = []
     for robot_dir in ("xarm5", "xarm6", "xarm7"):
         for variant in _XARM_URDF_VARIANTS:
-            urdf = _URDF_ROOT / robot_dir / variant.format(robot_dir)
+            urdf = _URDF_ROOT / "robots" / robot_dir / variant.format(robot_dir)
             inertial = ET.parse(urdf).getroot().find("./link[@name='link_base']/inertial")
             assert inertial is not None, _rel(urdf)
 
@@ -1033,6 +1044,58 @@ def test_xarm_bases_share_unified_inertial_parameters() -> None:
     np.testing.assert_allclose(eig, expected_principal, rtol=0.0, atol=1e-11)
 
 
+def test_uf850_base_uses_solidworks_inertial_parameters() -> None:
+    """UF850 STL and GLB URDFs share the SolidWorks Arm850_P01 link_base inertials (URDF negative off-diagonals)."""
+    expected_mass = 5.869631
+    expected_com = (-0.000762, -4.4e-05, 0.11761)
+    expected_rpy = (0.0, 0.0, 0.0)
+    expected_inertia = {
+        "ixx": 0.032711870245,
+        "ixy": 8.0733473e-05,
+        "ixz": -0.000343329636,
+        "iyy": 0.03295126767,
+        "iyz": -1.0328638e-05,
+        "izz": 0.013458380527,
+    }
+    expected_principal = np.array([13452256.142, 32692678.345, 32976583.954], dtype=np.float64) * 1e-9
+
+    serialized: list[str] = []
+    for filename in ("uf850.urdf", "uf850_visual.glb.urdf"):
+        urdf = _URDF_ROOT / "robots" / "uf850" / filename
+        inertial = ET.parse(urdf).getroot().find("./link[@name='link_base']/inertial")
+        assert inertial is not None, _rel(urdf)
+
+        mass = float(inertial.find("mass").attrib["value"])
+        assert mass == pytest.approx(expected_mass, rel=0.0, abs=1e-12), _rel(urdf)
+
+        origin = inertial.find("origin")
+        xyz = tuple(float(v) for v in origin.attrib["xyz"].split())
+        rpy = tuple(float(v) for v in origin.attrib.get("rpy", "0 0 0").split())
+        assert xyz == pytest.approx(expected_com, rel=0.0, abs=1e-12), _rel(urdf)
+        assert rpy == pytest.approx(expected_rpy, rel=0.0, abs=1e-12), _rel(urdf)
+
+        inertia = {k: float(v) for k, v in inertial.find("inertia").attrib.items()}
+        for key, expected_val in expected_inertia.items():
+            assert inertia[key] == pytest.approx(expected_val, rel=0.0, abs=1e-12), (_rel(urdf), key)
+
+        serialized.append(ET.tostring(inertial, encoding="unicode").strip())
+
+    assert len(set(serialized)) == 1
+
+    tensor = np.array(
+        [
+            [expected_inertia["ixx"], expected_inertia["ixy"], expected_inertia["ixz"]],
+            [expected_inertia["ixy"], expected_inertia["iyy"], expected_inertia["iyz"]],
+            [expected_inertia["ixz"], expected_inertia["iyz"], expected_inertia["izz"]],
+        ],
+        dtype=np.float64,
+    )
+    eig = np.linalg.eigvalsh(tensor)
+    assert eig.min() > 0.0
+    assert eig[0] + eig[1] > eig[2]
+    np.testing.assert_allclose(eig, expected_principal, rtol=0.0, atol=1e-11)
+
+
 def test_xarm_flange_visual_is_centred_on_the_flange_frame() -> None:
     """xArm5/6/7 share one flange link; its GLB stays centred on the flange axis like the STL.
 
@@ -1041,11 +1104,11 @@ def test_xarm_flange_visual_is_centred_on_the_flange_frame() -> None:
     trimesh = pytest.importorskip("trimesh")
     pytest.importorskip("DracoPy")
     pytest.importorskip("pygltflib")
-    meshes = _URDF_ROOT / "xarm6" / "meshes" / "xarm6_1305"
+    meshes = _URDF_ROOT / "robots" / "xarm6" / "meshes" / "xarm6_1305"
     stl, glb = meshes / "visual" / "link6.stl", meshes / "visual_glb" / "link6.glb"
     for robot_dir, flange in (("xarm5", "link5"), ("xarm6", "link6"), ("xarm7", "link7")):
         for variant, visual in zip(_XARM_URDF_VARIANTS, (stl, glb)):
-            urdf = _URDF_ROOT / robot_dir / variant.format(robot_dir)
+            urdf = _URDF_ROOT / "robots" / robot_dir / variant.format(robot_dir)
             assert [path for _, path in _placed_meshes(urdf, flange, "visual")] == [visual], _rel(urdf)
 
     def bbox_centre(path: Path) -> np.ndarray:
@@ -1060,7 +1123,7 @@ def test_lite6_base_glb_is_aligned_with_stl_at_z0() -> None:
     trimesh = pytest.importorskip("trimesh")
     pytest.importorskip("DracoPy")
     pytest.importorskip("pygltflib")
-    meshes = _URDF_ROOT / "lite6" / "meshes" / "lite6"
+    meshes = _URDF_ROOT / "robots" / "lite6" / "meshes" / "lite6"
     stl = _mesh_vertices(meshes / "visual" / "link_base.stl", trimesh)
     glb = _mesh_vertices(meshes / "visual_glb" / "link_base.glb", trimesh)
     assert float(glb[:, 2].min()) == pytest.approx(float(stl[:, 2].min()), abs=2e-5)
@@ -1070,7 +1133,9 @@ def test_lite6_base_glb_is_aligned_with_stl_at_z0() -> None:
 def test_arm_and_bio_g2_collision_meshes_are_convex_hulls() -> None:
     """Genesis keeps its pure-convex path, and the Bio G2 collision audit checks these meshes as convex shapes."""
     trimesh = pytest.importorskip("trimesh")
-    urdfs = [_URDF_ROOT / robot_dir / f"{prefix}.urdf" for robot_dir, (_, prefix, _) in _REGISTERED_ARMS.items()]
+    urdfs = [
+        _URDF_ROOT / "robots" / robot_dir / f"{prefix}.urdf" for robot_dir, (_, prefix, _) in _REGISTERED_ARMS.items()
+    ]
     meshes = sorted(
         {
             (urdf.parent / name).resolve()
@@ -1099,7 +1164,7 @@ def test_bio_gripper_g2_collision_mesh_basenames_are_unique_in_combos() -> None:
 
 def test_bio_gripper_g2_urdfs_do_not_reference_legacy_short_stl_names() -> None:
     legacy = {
-        (_URDF_ROOT / "bio_gripper_g2" / "meshes" / "visual" / name).resolve()
+        (_URDF_ROOT / "end_effectors" / "bio_gripper_g2" / "meshes" / "visual" / name).resolve()
         for name in ("link_base.stl", "left_finger.stl", "right_finger.stl")
     }
     bad: list[str] = []
@@ -1181,7 +1246,7 @@ def test_bio_gripper_g2_movable_collision_bbox_centers_match_visual_glb() -> Non
 
 def test_bio_gripper_g2_visual_glb_budget() -> None:
     """High-poly + native Draco should keep Bio G2 visual GLBs under 1 MiB."""
-    package_dir = PROJECT_ROOT / "assets" / "urdf" / "bio_gripper_g2"
+    package_dir = PROJECT_ROOT / "assets" / "urdf" / "end_effectors" / "bio_gripper_g2"
     visual_dir = package_dir / "meshes" / "visual"
     glbs = sorted(
         path
@@ -1245,7 +1310,7 @@ def _bio_g2_adapter_metal(name: str) -> tuple[np.ndarray, np.ndarray, np.ndarray
     pygltflib = pytest.importorskip("pygltflib")
     from scipy.spatial.transform import Rotation
 
-    glb = pygltflib.GLTF2().load(str(_URDF_ROOT / "bio_gripper_g2" / "meshes" / "visual" / name))
+    glb = pygltflib.GLTF2().load(str(_URDF_ROOT / "end_effectors" / "bio_gripper_g2" / "meshes" / "visual" / name))
     blob = glb.binary_blob()
     metal = [i for i, m in enumerate(glb.materials) if m.pbrMetallicRoughness.metallicFactor > 0.5]
     prim = next(p for m in glb.meshes for p in m.primitives if p.material in metal)
@@ -1343,7 +1408,7 @@ def test_bio_gripper_g2_adapter_faces_stop_at_hole_rims(name: str) -> None:
 
 def test_gripper_g2_visual_glb_budget() -> None:
     """Canonical Gripper G2 visual GLBs (native Draco) must stay under 1 MiB."""
-    package_dir = PROJECT_ROOT / "assets" / "urdf" / "gripper_g2"
+    package_dir = PROJECT_ROOT / "assets" / "urdf" / "end_effectors" / "gripper_g2"
     visual_dir = package_dir / "meshes" / "visual"
     glbs = sorted(
         path
@@ -1369,7 +1434,7 @@ def test_gripper_g2_visual_glb_budget() -> None:
 
 def test_lite6_gripper_visual_glb_budget() -> None:
     """Lite6 gripper visual GLBs (native Draco) must stay under 1 MiB."""
-    package_dir = PROJECT_ROOT / "assets" / "urdf" / "lite6_gripper"
+    package_dir = PROJECT_ROOT / "assets" / "urdf" / "end_effectors" / "lite6_gripper"
     visual_dir = package_dir / "meshes" / "visual"
     glbs = sorted(visual_dir.rglob("*.glb"))
     assert glbs, "expected Lite6 gripper visual GLBs"
@@ -1382,7 +1447,7 @@ def test_lite6_gripper_visual_glb_budget() -> None:
 
 def test_lite6_vacuum_gripper_visual_glb_budget() -> None:
     """Lite6 vacuum gripper visual GLB (native Draco) must stay under 1 MiB."""
-    package_dir = PROJECT_ROOT / "assets" / "urdf" / "lite6_vacuum_gripper"
+    package_dir = PROJECT_ROOT / "assets" / "urdf" / "end_effectors" / "lite6_vacuum_gripper"
     visual_dir = package_dir / "meshes" / "visual"
     glbs = sorted(visual_dir.rglob("*.glb"))
     assert glbs, "expected Lite6 vacuum gripper visual GLBs"
@@ -1394,7 +1459,7 @@ def test_lite6_vacuum_gripper_visual_glb_budget() -> None:
 
 def test_vacuum_gripper_visual_glb_budget() -> None:
     """xArm/UF850 vacuum gripper visual GLB (native Draco) must stay under 1 MiB."""
-    package_dir = PROJECT_ROOT / "assets" / "urdf" / "vacuum_gripper"
+    package_dir = PROJECT_ROOT / "assets" / "urdf" / "end_effectors" / "vacuum_gripper"
     visual_dir = package_dir / "meshes" / "visual"
     glbs = sorted(visual_dir.rglob("*.glb"))
     assert glbs, "expected xArm/UF850 vacuum gripper visual GLBs"
@@ -1409,7 +1474,7 @@ def test_vacuum_gripper_visual_glb_budget() -> None:
     [
         (
             "xarm6",
-            "assets/urdf/xarm6/meshes/xarm6_1305/visual_glb",
+            "assets/urdf/robots/xarm6/meshes/xarm6_1305/visual_glb",
             1_500_000,
             {
                 "link_base.glb",
@@ -1423,13 +1488,13 @@ def test_vacuum_gripper_visual_glb_budget() -> None:
         ),
         (
             "xarm7",
-            "assets/urdf/xarm7/meshes/xarm7_1305/visual_glb",
+            "assets/urdf/robots/xarm7/meshes/xarm7_1305/visual_glb",
             1_000_000,
             {"link1.glb", "link2.glb", "link3.glb", "link4.glb", "link5.glb", "link6.glb"},
         ),
         (
             "uf850",
-            "assets/urdf/uf850/meshes/uf850/visual_glb",
+            "assets/urdf/robots/uf850/meshes/uf850/visual_glb",
             1_000_000,
             {
                 "link_base.glb",
@@ -1443,7 +1508,7 @@ def test_vacuum_gripper_visual_glb_budget() -> None:
         ),
         (
             "lite6",
-            "assets/urdf/lite6/meshes/lite6/visual_glb",
+            "assets/urdf/robots/lite6/meshes/lite6/visual_glb",
             1_000_000,
             {
                 "link_base.glb",
@@ -1475,14 +1540,14 @@ def test_arm_body_visual_glb_budget(
 
 def test_accessory_collision_meshes_are_stl_files() -> None:
     urdfs = (
-        _URDF_ROOT / "gripper_g2" / "gripper_g2_movable_visual.urdf",
+        _URDF_ROOT / "end_effectors" / "gripper_g2" / "gripper_g2_movable_visual.urdf",
         *_BIO_GRIPPER_G2_PARTS,
-        _URDF_ROOT / "lite6_gripper" / "lite6_gripper_movable_visual.urdf",
-        _URDF_ROOT / "lite6_vacuum_gripper" / "lite6_vacuum_gripper.urdf",
-        _URDF_ROOT / "vacuum_gripper" / "vacuum_gripper.urdf",
-        _URDF_ROOT / "xarm_mounting_plate" / "xarm_mounting_plate.urdf",
-        _URDF_ROOT / "uf850_mounting_plate" / "uf850_mounting_plate.urdf",
-        _URDF_ROOT / "lite6_mounting_plate" / "lite6_mounting_plate.urdf",
+        _URDF_ROOT / "end_effectors" / "lite6_gripper" / "lite6_gripper_movable_visual.urdf",
+        _URDF_ROOT / "end_effectors" / "lite6_vacuum_gripper" / "lite6_vacuum_gripper.urdf",
+        _URDF_ROOT / "end_effectors" / "vacuum_gripper" / "vacuum_gripper.urdf",
+        _URDF_ROOT / "mounts" / "xarm_mounting_plate" / "xarm_mounting_plate.urdf",
+        _URDF_ROOT / "mounts" / "uf850_mounting_plate" / "uf850_mounting_plate.urdf",
+        _URDF_ROOT / "mounts" / "lite6_mounting_plate" / "lite6_mounting_plate.urdf",
         *_assembly_urdfs(),
     )
     bad: list[str] = []
@@ -1499,7 +1564,7 @@ def test_accessory_collision_meshes_are_stl_files() -> None:
 
 def test_standalone_movable_accessory_collision_links_are_movable() -> None:
     expected = {
-        PROJECT_ROOT / "assets" / "urdf" / "gripper_g2" / "gripper_g2_movable_visual.urdf": {
+        PROJECT_ROOT / "assets" / "urdf" / "end_effectors" / "gripper_g2" / "gripper_g2_movable_visual.urdf": {
             "left_outer_knuckle",
             "left_finger",
             "left_inner_knuckle",
@@ -1507,11 +1572,11 @@ def test_standalone_movable_accessory_collision_links_are_movable() -> None:
             "right_finger",
             "right_inner_knuckle",
         },
-        PROJECT_ROOT / "assets" / "urdf" / "bio_gripper_g2" / "bio_gripper_g2_movable_visual.urdf": {
+        PROJECT_ROOT / "assets" / "urdf" / "end_effectors" / "bio_gripper_g2" / "bio_gripper_g2_movable_visual.urdf": {
             "bio_gripper_g2_left_finger",
             "bio_gripper_g2_right_finger",
         },
-        PROJECT_ROOT / "assets" / "urdf" / "lite6_gripper" / "lite6_gripper_movable_visual.urdf": {
+        PROJECT_ROOT / "assets" / "urdf" / "end_effectors" / "lite6_gripper" / "lite6_gripper_movable_visual.urdf": {
             "uflite_finger1",
             "uflite_finger2",
         },
@@ -1533,7 +1598,7 @@ def test_standalone_movable_accessory_collision_links_are_movable() -> None:
 
 
 def test_lite6_vacuum_standalone_collision_is_static_only() -> None:
-    urdfs = (_URDF_ROOT / "lite6_vacuum_gripper" / "lite6_vacuum_gripper.urdf",)
+    urdfs = (_URDF_ROOT / "end_effectors" / "lite6_vacuum_gripper" / "lite6_vacuum_gripper.urdf",)
     bad: list[str] = []
     for urdf in urdfs:
         movable_joints = sorted(_non_fixed_joint_names(urdf))
@@ -1545,7 +1610,7 @@ def test_lite6_vacuum_standalone_collision_is_static_only() -> None:
 def test_arm_movable_accessory_collision_links_match_standalone_models() -> None:
     cases = (
         (
-            PROJECT_ROOT / "assets" / "urdf" / "gripper_g2" / "gripper_g2_movable_visual.urdf",
+            PROJECT_ROOT / "assets" / "urdf" / "end_effectors" / "gripper_g2" / "gripper_g2_movable_visual.urdf",
             {
                 "left_outer_knuckle",
                 "left_finger",
@@ -1557,7 +1622,12 @@ def test_arm_movable_accessory_collision_links_match_standalone_models() -> None
             tuple(_assembly_urdfs("gripper_g2")),
         ),
         (
-            PROJECT_ROOT / "assets" / "urdf" / "bio_gripper_g2" / "bio_gripper_g2_movable_visual.urdf",
+            PROJECT_ROOT
+            / "assets"
+            / "urdf"
+            / "end_effectors"
+            / "bio_gripper_g2"
+            / "bio_gripper_g2_movable_visual.urdf",
             {
                 "bio_gripper_g2_left_finger",
                 "bio_gripper_g2_right_finger",
@@ -1565,7 +1635,7 @@ def test_arm_movable_accessory_collision_links_match_standalone_models() -> None
             tuple(_assembly_urdfs("bio_gripper_g2")),
         ),
         (
-            PROJECT_ROOT / "assets" / "urdf" / "lite6_gripper" / "lite6_gripper_movable_visual.urdf",
+            PROJECT_ROOT / "assets" / "urdf" / "end_effectors" / "lite6_gripper" / "lite6_gripper_movable_visual.urdf",
             {
                 "uflite_finger1",
                 "uflite_finger2",
@@ -1604,7 +1674,7 @@ def test_arm_movable_accessory_collision_links_match_standalone_models() -> None
 def _lite6_gripper_finger_urdfs() -> list[Path]:
     """Lite6 gripper part and composed assemblies that keep per-finger visuals (GLB and STL arm visuals)."""
     return [
-        _URDF_ROOT / "lite6_gripper" / "lite6_gripper_movable_visual.urdf",
+        _URDF_ROOT / "end_effectors" / "lite6_gripper" / "lite6_gripper_movable_visual.urdf",
         *_assembly_urdfs("lite6_gripper", modes=("glb", "stl")),
     ]
 
@@ -1693,7 +1763,7 @@ def _lite6_gripper_finger_center_separation_mm(
 
 def test_lite6_gripper_finger_collision_gap_at_keyframes() -> None:
     trimesh = pytest.importorskip("trimesh")
-    mesh_dir = PROJECT_ROOT / "assets" / "urdf" / "lite6_gripper" / "meshes" / "collision"
+    mesh_dir = PROJECT_ROOT / "assets" / "urdf" / "end_effectors" / "lite6_gripper" / "meshes" / "collision"
     finger1_vertices = _mesh_vertices(mesh_dir / "finger1.stl", trimesh)
     finger2_vertices = _mesh_vertices(mesh_dir / "finger2.stl", trimesh)
 
@@ -1800,9 +1870,13 @@ def test_lite6_gripper_finger_collision_gap_at_keyframes() -> None:
 
 
 def test_lite6_vacuum_collision_uses_visual_stl() -> None:
-    expected = {(_URDF_ROOT / "lite6_vacuum_gripper" / "meshes" / "visual" / "vacuum_gripper_lite.stl").resolve()}
+    expected = {
+        (
+            _URDF_ROOT / "end_effectors" / "lite6_vacuum_gripper" / "meshes" / "visual" / "vacuum_gripper_lite.stl"
+        ).resolve()
+    }
     urdfs = (
-        _URDF_ROOT / "lite6_vacuum_gripper" / "lite6_vacuum_gripper.urdf",
+        _URDF_ROOT / "end_effectors" / "lite6_vacuum_gripper" / "lite6_vacuum_gripper.urdf",
         *_assembly_urdfs("lite6_vacuum_gripper"),
     )
     bad: list[str] = []
@@ -1835,7 +1909,7 @@ def test_vacuum_gripper_static_urdfs_and_parameters() -> None:
     }
     from ufactory.robots.registry import get_robot_profile
 
-    cases = [(_URDF_ROOT / "vacuum_gripper" / "vacuum_gripper.urdf", "vacuum_mount", 0)]
+    cases = [(_URDF_ROOT / "end_effectors" / "vacuum_gripper" / "vacuum_gripper.urdf", "vacuum_mount", 0)]
     for key in end_effectors()["vacuum_gripper"].robots:
         profile = get_robot_profile(key)
         cases += [(urdf, profile.ee_link, profile.dof) for urdf in _assembly_urdfs("vacuum_gripper", robot=key)]
@@ -1877,11 +1951,11 @@ def test_robotiq_urdfs_share_joint_limits_mimic_and_glb_budget(variant: str) -> 
     from ufactory.grippers.robotiq import get_robotiq_spec
 
     spec = get_robotiq_spec(variant)
-    glb_dir = _URDF_ROOT / variant / "meshes" / "visual" / "visual_glb"
+    glb_dir = _URDF_ROOT / "end_effectors" / variant / "meshes" / "visual" / "visual_glb"
     glb_total = sum(p.stat().st_size for p in glb_dir.glob("*.glb"))
     assert 0 < glb_total < 1_000_000, f"{variant} GLB total {glb_total} bytes exceeds 1 MB"
 
-    part = _URDF_ROOT / variant / f"{variant}_movable_visual.urdf"
+    part = _URDF_ROOT / "end_effectors" / variant / f"{variant}_movable_visual.urdf"
     models = [part, *_assembly_urdfs(variant)]
     assert len(models) == 9
     for path in models:
@@ -1899,3 +1973,57 @@ def test_robotiq_urdfs_share_joint_limits_mimic_and_glb_budget(variant: str) -> 
                 assert mimic.get("joint") == spec.drive_joint_name, (path, name)
                 assert float(mimic.get("multiplier", "1")) == 1.0, (path, name)
                 assert float(mimic.get("offset", "0")) == 0.0, (path, name)
+
+
+def test_lite6_link6_three_hull_enclosure_and_wrist_clearance() -> None:
+    """Lite6 link6's three convex hulls enclose link6.stl tightly without hiding near-limit link4/link6 contact."""
+    trimesh = pytest.importorskip("trimesh")
+    pytest.importorskip("pinocchio")
+    pytest.importorskip("coal")
+    from ufactory.safety.adapters.pinocchio import PinocchioCollisionBackend
+
+    meshes_dir = _URDF_ROOT / "robots" / "lite6" / "meshes" / "lite6"
+    visual = trimesh.load(meshes_dir / "visual" / "link6.stl", force="mesh")
+    hulls = [
+        trimesh.load(meshes_dir / "collision" / f"lite6_link6_col_{idx:02d}.stl", force="mesh") for idx in range(3)
+    ]
+
+    for hull in hulls:
+        _, dists, _ = trimesh.proximity.closest_point(visual, hull.vertices)
+        assert float(np.max(dists)) < 5e-5
+
+    pts = np.asarray(visual.vertices, dtype=np.float64)
+    min_outside = np.full(len(pts), np.inf, dtype=np.float64)
+    for hull in hulls:
+        normals = np.asarray(hull.face_normals, dtype=np.float64)
+        v0 = np.asarray(hull.vertices[hull.faces[:, 0]], dtype=np.float64)
+        outside = np.max(pts @ normals.T - np.sum(v0 * normals, axis=1)[None, :], axis=1)
+        min_outside = np.minimum(min_outside, outside)
+    assert float(np.max(min_outside)) < 1e-6
+
+    backend = PinocchioCollisionBackend(
+        _URDF_ROOT / "robots" / "lite6" / "lite6.urdf",
+        joint_names=("joint1", "joint2", "joint3", "joint4", "joint5", "joint6"),
+        ee_link="link6",
+        tool_root_link="link6",
+    )
+
+    def link4_link6_min_mm(q5: float, q6: float) -> float:
+        q = np.array([0.0, 0.0, 0.0, 0.0, q5, q6], dtype=np.float64)
+        return min(
+            res.min_distance_m * 1000.0
+            for res in backend.check_all(q, stage="start")
+            if {res.link_a, res.link_b} == {"link4", "link6"}
+        )
+
+    # Normal working range stays comfortably above the 5 mm preflight margin across all q6.
+    normal_min_mm = min(
+        link4_link6_min_mm(q5, q6)
+        for q5 in (-1.8, -1.0, 0.0, 0.2742, 1.0, 1.8)
+        for q6 in np.linspace(-np.pi, np.pi, 13)
+    )
+    assert normal_min_mm > 5.8
+
+    # Near the J5 mechanical limit, real link4/link6 contact is still detected.
+    limit_min_mm = min(link4_link6_min_mm(2.1642, q6) for q6 in np.linspace(-np.pi, np.pi, 13))
+    assert limit_min_mm < 0.5

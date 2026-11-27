@@ -28,14 +28,14 @@ from ufactory.robots.registry import get_robot_profile
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 URDF_ROOT = PROJECT_ROOT / "assets" / "urdf"
-ADAPTER_DIR = URDF_ROOT / "robotiq_mounting"
+ADAPTER_DIR = URDF_ROOT / "mounts" / "robotiq_mounting"
 
 XARM_ARMS = ("xarm5_1305", "xarm6_1305", "xarm7_1305", "uf850")
 ROBOTIQ_EES = ("robotiq_2f_85", "robotiq_2f_140")
 CAMERAS = ("d405", "d435", "gemini_305", "zed_x_nano")
 ADAPTER_LIFT_M = 0.011
 STAND_LIFT_M = 0.003
-ADAPTER_MASS_KG = 0.1097214329
+ADAPTER_MASS_KG = 0.118
 ROBOTIQ_BASE_TCP_Z_M = {"robotiq_2f_85": 0.162253, "robotiq_2f_140": 0.234466}
 ROBOTIQ_TOOL_TIP_Z_M = {"robotiq_2f_85": 0.1093, "robotiq_2f_140": 0.1403}
 
@@ -159,7 +159,10 @@ def test_adapter_assets_budget_material_hulls_and_inertial() -> None:
     )
     assert pbr["metallicFactor"] == pytest.approx(0.8, abs=1e-5)
     assert pbr["roughnessFactor"] == pytest.approx(0.640130877494812, abs=1e-5)
-    for arm_glb in ("xarm6/meshes/xarm6_1305/visual_glb/link6.glb", "uf850/meshes/uf850/visual_glb/link6.glb"):
+    for arm_glb in (
+        "robots/xarm6/meshes/xarm6_1305/visual_glb/link6.glb",
+        "robots/uf850/meshes/uf850/visual_glb/link6.glb",
+    ):
         arm_meta = _glb_json(URDF_ROOT / arm_glb)
         arm_metals = [
             m["pbrMetallicRoughness"]
@@ -182,6 +185,16 @@ def test_adapter_assets_budget_material_hulls_and_inertial() -> None:
     tensor = np.array([[i["ixx"], i["ixy"], i["ixz"]], [i["ixy"], i["iyy"], i["iyz"]], [i["ixz"], i["iyz"], i["izz"]]])
     eig = np.linalg.eigvalsh(tensor)
     assert eig.min() > 0.0 and eig[0] + eig[1] > eig[2]
+    expected_inertia = {
+        "ixx": 4.427070717e-05,
+        "ixy": 0.0,
+        "ixz": 0.0,
+        "iyy": 4.997953153e-05,
+        "iyz": 7.208106518e-08,
+        "izz": 9.018403314e-05,
+    }
+    for key, expected_val in expected_inertia.items():
+        assert i[key] == pytest.approx(expected_val, rel=0.0, abs=1e-12), key
 
     cols = [m.get("filename") for m in root.findall("./link[@name='robotiq_mounting']/collision/geometry/mesh")]
     assert cols == ["meshes/collision/robotiq_mounting_col_00.stl", "meshes/collision/robotiq_mounting_col_01.stl"]
@@ -213,7 +226,7 @@ def test_robotiq_base_collar_is_smooth_coated_metal(ee: str) -> None:
     pygltflib = pytest.importorskip("pygltflib")
     DracoPy = pytest.importorskip("DracoPy")
 
-    glb_path = URDF_ROOT / ee / "meshes" / "visual" / "visual_glb" / "base.glb"
+    glb_path = URDF_ROOT / "end_effectors" / ee / "meshes" / "visual" / "visual_glb" / "base.glb"
     glb = pygltflib.GLTF2().load(str(glb_path))
     blob = glb.binary_blob()
     assert len(glb.meshes) == 2
@@ -362,7 +375,9 @@ def test_adapter_frames_and_robotiq_tcp_offsets() -> None:
         flange = get_robot_profile(arm).ee_link
 
         for ee in ROBOTIQ_EES:
-            rq_part = pin.buildModelFromUrdf(str(URDF_ROOT / ee / f"{ee}_movable_visual.urdf"), mimic=True)
+            rq_part = pin.buildModelFromUrdf(
+                str(URDF_ROOT / "end_effectors" / ee / f"{ee}_movable_visual.urdf"), mimic=True
+            )
             rq_mass = sum(i.mass for i in rq_part.inertias)
 
             m = pin.buildModelFromUrdf(compose_robot_urdf(arm, ee), mimic=True)

@@ -174,6 +174,7 @@ class BioGripperG2Model:
                 Path(__file__).resolve().parents[2]
                 / "assets"
                 / "urdf"
+                / "end_effectors"
                 / "bio_gripper_g2"
                 / "bio_gripper_g2_movable_visual.urdf"
             )

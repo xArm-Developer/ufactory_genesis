@@ -888,7 +888,7 @@ wheels = [
 
 [[package]]
 name = "genesis-ufactory"
-version = "0.3.10"
+version = "0.3.11"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },

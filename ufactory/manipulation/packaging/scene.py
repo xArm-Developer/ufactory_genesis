@@ -311,7 +311,7 @@ def _add_packaging_robot(scene: gs.Scene, layout: PackagingSceneLayout, urdf_pat
 def build_packaging_scene(
     table_top_z: float = DEFAULT_TABLE_TOP_Z,
     *,
-    sim_dt: float = 0.02,
+    sim_dt: float | None = None,
     show_viewer: bool = True,
     build_scene: bool = True,
     renderer=None,
@@ -321,18 +321,19 @@ def build_packaging_scene(
     runtime_config=None,
 ):
     config = runtime_config or load_runtime_config("xarm6", task="packaging_showcase")
+    resolved_sim_dt = 1.0 / float(config.simulation.rate_hz) if sim_dt is None else float(sim_dt)
     layout = make_layout(table_top_z, config)
     substeps = int(config.simulation.substeps)
     if config.gripper.adapter == "g2":
-        validate_g2_contact_substeps(dt=sim_dt, substeps=substeps)
+        validate_g2_contact_substeps(dt=resolved_sim_dt, substeps=substeps)
     elif config.gripper.adapter in {"robotiq_2f_85", "robotiq_2f_140"}:
-        validate_robotiq_contact_substeps(dt=sim_dt, substeps=substeps, variant=config.gripper.adapter)
+        validate_robotiq_contact_substeps(dt=resolved_sim_dt, substeps=substeps, variant=config.gripper.adapter)
     cam_pos, cam_lookat = packaging_camera(layout)
     scene_kwargs: dict = {}
     if renderer is not None:
         scene_kwargs["renderer"] = renderer
     scene = gs.Scene(
-        sim_options=gs.options.SimOptions(dt=sim_dt, substeps=substeps),
+        sim_options=gs.options.SimOptions(dt=resolved_sim_dt, substeps=substeps),
         rigid_options=make_rigid_options(
             gs,
             constraint_solver=config.simulation.constraint_solver,

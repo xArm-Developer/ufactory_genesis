@@ -1,6 +1,8 @@
 """Gripper control and command-space conversion helpers."""
 
 from ufactory.grippers.bio_g2 import (
+    BIO_G2_BLOCKED_MODES,
+    BIO_G2_CONTROLLER_VALIDATED,
     BIO_G2_JOINT_NAMES,
     BIO_GRIPPER_G2_CLOSED_GAP_M,
     BIO_GRIPPER_G2_CLOSED_GAP_MM,
@@ -9,7 +11,9 @@ from ufactory.grippers.bio_g2 import (
     BIO_GRIPPER_G2_OPEN_GAP_MM,
     BIO_GRIPPER_G2_SIM_CLOSED_DRIVE,
     BIO_GRIPPER_G2_SIM_OPEN_DRIVE,
+    BIO_GRIPPER_G2_TCP_IN_FLANGE_M,
     BioGripperG2,
+    bio_g2_controller_mode_error,
     bio_gripper_g2_gap_m_to_sdk_pos_mm,
     bio_gripper_g2_gap_m_to_sim_drive,
     bio_gripper_g2_sim_drive_to_gap_m,
@@ -65,10 +69,22 @@ from ufactory.grippers.adapters import (
     Robotiq2F85Adapter,
     Robotiq2F140Adapter,
     RobotiqAdapter,
+    VacuumProfileAdapter,
     create_gripper_adapter,
+)
+from ufactory.grippers.vacuum import (
+    VACUUM_GRIPPER_COM_FLANGE_MM,
+    VACUUM_GRIPPER_MASS_KG,
+    VACUUM_GRIPPER_SUPPORTED_ROBOTS,
+    VACUUM_GRIPPER_TCP_OFFSET_MM_DEG,
+    VacuumGripperAdapter,
+    vacuum_controller_mode_error,
+    vacuum_io_pins,
 )
 
 __all__ = [
+    "BIO_G2_BLOCKED_MODES",
+    "BIO_G2_CONTROLLER_VALIDATED",
     "BIO_G2_JOINT_NAMES",
     "BIO_GRIPPER_G2_CLOSED_GAP_M",
     "BIO_GRIPPER_G2_CLOSED_GAP_MM",
@@ -77,8 +93,10 @@ __all__ = [
     "BIO_GRIPPER_G2_OPEN_GAP_MM",
     "BIO_GRIPPER_G2_SIM_CLOSED_DRIVE",
     "BIO_GRIPPER_G2_SIM_OPEN_DRIVE",
+    "BIO_GRIPPER_G2_TCP_IN_FLANGE_M",
     "BioG2Adapter",
     "BioGripperG2",
+    "bio_g2_controller_mode_error",
     "bio_gripper_g2_gap_m_to_sdk_pos_mm",
     "bio_gripper_g2_gap_m_to_sim_drive",
     "bio_gripper_g2_sim_drive_to_gap_m",
@@ -127,5 +145,13 @@ __all__ = [
     "RobotiqAdapter",
     "Robotiq2F85Adapter",
     "Robotiq2F140Adapter",
+    "VACUUM_GRIPPER_COM_FLANGE_MM",
+    "VACUUM_GRIPPER_MASS_KG",
+    "VACUUM_GRIPPER_SUPPORTED_ROBOTS",
+    "VACUUM_GRIPPER_TCP_OFFSET_MM_DEG",
+    "VacuumGripperAdapter",
+    "VacuumProfileAdapter",
     "create_gripper_adapter",
+    "vacuum_controller_mode_error",
+    "vacuum_io_pins",
 ]

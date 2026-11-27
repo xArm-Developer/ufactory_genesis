@@ -1,0 +1,329 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot name="gen">
+  <material name="Black">
+    <color rgba="0.0 0.0 0.0 1.0" />
+  </material>
+  <material name="Red">
+    <color rgba="0.8 0.0 0.0 1.0" />
+  </material>
+  <material name="White">
+    <color rgba="1.0 1.0 1.0 1.0" />
+  </material>
+  <material name="Silver">
+    <color rgba="0.753 0.753 0.753 1.0" />
+  </material>
+  <link name="world" />
+  <joint name="world_joint" type="fixed">
+    <parent link="world" />
+    <child link="link_base" />
+    <origin xyz="0 0 0" rpy="0 0 0" />
+  </joint>
+  <link name="link_base">
+    <inertial>
+      <origin xyz="-0.000762 -4.4e-05 0.11761" rpy="0 0 0" />
+      <mass value="5.869631" />
+      <inertia ixx="0.032711870245" ixy="8.0733473e-05" ixz="-0.000343329636" iyy="0.03295126767" iyz="-1.0328638e-05" izz="0.013458380527" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="meshes/uf850/visual/link_base.stl" />
+      </geometry>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <material name="White" />
+    </visual>
+    <collision name="link_base_col_0">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link_base_col_00.stl" />
+      </geometry>
+    </collision>
+    <collision name="link_base_col_1">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link_base_col_01.stl" />
+      </geometry>
+    </collision>
+    <collision name="link_base_col_2">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link_base_col_02.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="link1">
+    <inertial>
+      <origin rpy="0 0 0" xyz="5.7e-05 0.013842 -0.02055" />
+      <mass value="4.807" />
+      <inertia ixx="0.022001728999999998" ixy="-1.1152e-05" ixz="6.7380000000000005e-06" iyy="0.018900685" iyz="-0.000364084" izz="0.012270188" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="meshes/uf850/visual/link1.stl" />
+      </geometry>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <material name="White" />
+    </visual>
+    <collision name="link1_col_0">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link1_col_00.stl" />
+      </geometry>
+    </collision>
+    <collision name="link1_col_1">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link1_col_01.stl" />
+      </geometry>
+    </collision>
+    <collision name="link1_col_2">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link1_col_02.stl" />
+      </geometry>
+    </collision>
+    <collision name="link1_col_3">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link1_col_03.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint1" type="revolute">
+    <parent link="link_base" />
+    <child link="link1" />
+    <origin rpy="0 0 0" xyz="0 0 0.364" />
+    <axis xyz="0 0 1" />
+    <limit effort="382.5" lower="-6.283185307179586" upper="6.283185307179586" velocity="3.14" />
+    <dynamics damping="16.6" friction="9.6" />
+  </joint>
+  <link name="link2">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.323425 9.5e-05 0.007586" />
+      <mass value="3.28" />
+      <inertia ixx="0.0076119840000000005" ixy="-3.3561e-05" ixz="0.008240021" iyy="0.06420854" iyz="-1.6145e-05" izz="0.06117569999999999" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="meshes/uf850/visual/link2.stl" />
+      </geometry>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <material name="White" />
+    </visual>
+    <collision name="link2_col_0">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link2_col_00.stl" />
+      </geometry>
+    </collision>
+    <collision name="link2_col_1">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link2_col_01.stl" />
+      </geometry>
+    </collision>
+    <collision name="link2_col_2">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link2_col_02.stl" />
+      </geometry>
+    </collision>
+    <collision name="link2_col_3">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link2_col_03.stl" />
+      </geometry>
+    </collision>
+    <collision name="link2_col_4">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link2_col_04.stl" />
+      </geometry>
+    </collision>
+    <collision name="link2_col_5">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link2_col_05.stl" />
+      </geometry>
+    </collision>
+    <collision name="link2_col_6">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link2_col_06.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint2" type="revolute">
+    <parent link="link1" />
+    <child link="link2" />
+    <origin rpy="1.5708 -1.5708 0" xyz="0 0 0" />
+    <axis xyz="0 0 1" />
+    <limit effort="382.5" lower="-2.3038346" upper="2.3038346" velocity="3.14" />
+    <dynamics damping="12.5" friction="12.1" />
+  </joint>
+  <link name="link3">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.128834 0.11341 0.00978" />
+      <mass value="2.237" />
+      <inertia ixx="0.009920314" ixy="-0.005137841" ixz="0.0026284259999999997" iyy="0.008923236000000001" iyz="0.002412869" izz="0.014284809999999998" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="meshes/uf850/visual/link3.stl" />
+      </geometry>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <material name="White" />
+    </visual>
+    <collision name="link3_col_0">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link3_col_00.stl" />
+      </geometry>
+    </collision>
+    <collision name="link3_col_1">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link3_col_01.stl" />
+      </geometry>
+    </collision>
+    <collision name="link3_col_2">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link3_col_02.stl" />
+      </geometry>
+    </collision>
+    <collision name="link3_col_3">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link3_col_03.stl" />
+      </geometry>
+    </collision>
+    <collision name="link3_col_4">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link3_col_04.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint3" type="revolute">
+    <parent link="link2" />
+    <child link="link3" />
+    <origin rpy="-3.1416 0 -1.5708" xyz="0.39 0 0" />
+    <axis xyz="0 0 1" />
+    <limit effort="243.525" lower="-4.2236968" upper="0.061087" velocity="3.14" />
+    <dynamics damping="4.0" friction="5.5" />
+  </joint>
+  <link name="link4">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.000266 -0.03833 -0.101915" />
+      <mass value="2.041" />
+      <inertia ixx="0.019918597" ixy="-2.3185e-05" ixz="5.816899999999999e-05" iyy="0.017515193999999998" iyz="0.005878608" izz="0.004283807" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="meshes/uf850/visual/link4.stl" />
+      </geometry>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <material name="White" />
+    </visual>
+    <collision name="link4_col_0">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link4_col_00.stl" />
+      </geometry>
+    </collision>
+    <collision name="link4_col_1">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link4_col_01.stl" />
+      </geometry>
+    </collision>
+    <collision name="link4_col_2">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link4_col_02.stl" />
+      </geometry>
+    </collision>
+    <collision name="link4_col_3">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link4_col_03.stl" />
+      </geometry>
+    </collision>
+    <collision name="link4_col_4">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link4_col_04.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint4" type="revolute">
+    <parent link="link3" />
+    <child link="link4" />
+    <origin rpy="-1.5708 0 0" xyz="0.15 0.426 0" />
+    <axis xyz="0 0 1" />
+    <limit effort="117.3" lower="-6.283185307179586" upper="6.283185307179586" velocity="3.14" />
+    <dynamics damping="3.6" friction="2.2" />
+  </joint>
+  <link name="link5">
+    <inertial>
+      <origin rpy="0 0 0" xyz="5.7e-05 -0.015267 -0.001015" />
+      <mass value="1.385" />
+      <inertia ixx="0.0020774540000000003" ixy="-5.026e-06" ixz="-6.989999999999999e-07" iyy="0.001109183" iyz="6.747e-06" izz="0.0020357" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="meshes/uf850/visual/link5.stl" />
+      </geometry>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <material name="White" />
+    </visual>
+    <collision name="link5_col_0">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link5_col_00.stl" />
+      </geometry>
+    </collision>
+    <collision name="link5_col_1">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link5_col_01.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint5" type="revolute">
+    <parent link="link4" />
+    <child link="link5" />
+    <origin rpy="-1.5708 0 0" xyz="0 0 0" />
+    <axis xyz="0 0 1" />
+    <limit effort="38.25" lower="-2.1642" upper="2.1642" velocity="3.14" />
+    <dynamics damping="3.45" friction="3.2" />
+  </joint>
+  <link name="link6">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.000484 -0.000334 -0.014217" />
+      <mass value="0.225" />
+      <inertia ixx="0.000130252" ixy="-4.285e-06" ixz="3.19e-07" iyy="0.000128308" iyz="-3.86e-07" izz="0.00023249999999999999" />
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="meshes/uf850/visual/link6.stl" />
+      </geometry>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <material name="White" />
+    </visual>
+    <collision name="link6_col_0">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/uf850/collision/uf850_link6_col_00.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint6" type="revolute">
+    <parent link="link5" />
+    <child link="link6" />
+    <origin rpy="1.5708 0 0" xyz="0 -0.09 0" />
+    <axis xyz="0 0 1" />
+    <limit effort="38.25" lower="-6.283185307179586" upper="6.283185307179586" velocity="3.14" />
+    <dynamics damping="3.4" friction="1.1" />
+  </joint>
+</robot>

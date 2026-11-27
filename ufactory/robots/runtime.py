@@ -7,6 +7,13 @@ import math
 import xml.etree.ElementTree as ET
 
 from ufactory.robots.registry import RobotModelSpec, get_robot_profile, joint_names, robot_cli_choices
+from ufactory.grippers.bio_g2 import (
+    BIO_G2_JOINT_NAMES,
+    BIO_GRIPPER_G2_CLOSED_GAP_M,
+    BIO_GRIPPER_G2_OPEN_GAP_M,
+    BIO_GRIPPER_G2_SIM_CLOSED_DRIVE,
+    BIO_GRIPPER_G2_SIM_OPEN_DRIVE,
+)
 from ufactory.grippers.g2 import G2_JOINT_NAMES, GRIPPER_G2_SIM_OPEN_DRIVE, GRIPPER_G2_SIM_CLOSE_DRIVE
 from ufactory.grippers.robotiq import (
     ROBOTIQ_2F_85_JOINT_NAMES,
@@ -77,9 +84,9 @@ class GripperControlParams:
     """
 
     family: str
-    drive_joint: str
+    drive_joint: str | None
     all_joint_names: tuple[str, ...]
-    finger_link_names: tuple[str, str]
+    finger_link_names: tuple[str, ...]
     open_pos: float
     close_pos: float
     closed_gap_m: float
@@ -90,6 +97,16 @@ class GripperControlParams:
     force_upper: float
     damping: float
     frictionloss: float
+    tool_tip_link: str | None = None
+    tcp_offset_mm_deg: tuple[float, float, float, float, float, float] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    @property
+    def has_actuated_joints(self) -> bool:
+        return bool(self.drive_joint and self.all_joint_names)
+
+    @property
+    def has_finger_links(self) -> bool:
+        return len(self.finger_link_names) >= 2
 
 
 @dataclass(frozen=True)
@@ -137,6 +154,7 @@ G2_GRIPPER_PARAMS = GripperControlParams(
     force_upper=5.0,
     damping=0.1,
     frictionloss=0.0,
+    tcp_offset_mm_deg=(0.0, 0.0, 178.6, 0.0, 0.0, 0.0),
 )
 
 LITE6_GRIPPER_PARAMS = GripperControlParams(
@@ -154,6 +172,7 @@ LITE6_GRIPPER_PARAMS = GripperControlParams(
     force_upper=20.0,
     damping=0.05,
     frictionloss=0.0,
+    tcp_offset_mm_deg=(0.0, 0.0, 75.3, 0.0, 0.0, 0.0),
 )
 
 ROBOTIQ_2F_85_GRIPPER_PARAMS = GripperControlParams(
@@ -171,6 +190,7 @@ ROBOTIQ_2F_85_GRIPPER_PARAMS = GripperControlParams(
     force_upper=30.0,
     damping=0.1,
     frictionloss=0.0,
+    tcp_offset_mm_deg=(0.0, 0.0, 173.8, 0.0, 0.0, 0.0),
 )
 
 ROBOTIQ_2F_140_GRIPPER_PARAMS = GripperControlParams(
@@ -188,6 +208,64 @@ ROBOTIQ_2F_140_GRIPPER_PARAMS = GripperControlParams(
     force_upper=30.0,
     damping=0.1,
     frictionloss=0.0,
+    tcp_offset_mm_deg=(0.0, 0.0, 246.1, 0.0, 0.0, 0.0),
+)
+
+BIO_GRIPPER_G2_GRIPPER_PARAMS = GripperControlParams(
+    family="bio_gripper_g2",
+    drive_joint="bio_gripper_g2_right_finger_joint",
+    all_joint_names=BIO_G2_JOINT_NAMES,
+    finger_link_names=("bio_gripper_g2_left_finger", "bio_gripper_g2_right_finger"),
+    open_pos=BIO_GRIPPER_G2_SIM_OPEN_DRIVE,
+    close_pos=BIO_GRIPPER_G2_SIM_CLOSED_DRIVE,
+    closed_gap_m=BIO_GRIPPER_G2_CLOSED_GAP_M,
+    open_gap_m=BIO_GRIPPER_G2_OPEN_GAP_M,
+    kp=16000.0,
+    kv=40.0,
+    force_lower=-20.0,
+    force_upper=20.0,
+    damping=0.1,
+    frictionloss=0.0,
+    tool_tip_link="bio_gripper_g2_tcp_link",
+    tcp_offset_mm_deg=(157.64, 0.0, 59.5, 0.0, 0.0, 0.0),
+)
+
+VACUUM_GRIPPER_PARAMS = GripperControlParams(
+    family="vacuum_gripper",
+    drive_joint=None,
+    all_joint_names=(),
+    finger_link_names=(),
+    open_pos=0.0,
+    close_pos=0.0,
+    closed_gap_m=0.0,
+    open_gap_m=0.0,
+    kp=0.0,
+    kv=0.0,
+    force_lower=0.0,
+    force_upper=0.0,
+    damping=0.0,
+    frictionloss=0.0,
+    tool_tip_link="vacuum_tcp",
+    tcp_offset_mm_deg=(0.0, 0.0, 126.0, 0.0, 0.0, 0.0),
+)
+
+LITE6_VACUUM_GRIPPER_PARAMS = GripperControlParams(
+    family="lite6_vacuum_gripper",
+    drive_joint=None,
+    all_joint_names=(),
+    finger_link_names=(),
+    open_pos=0.0,
+    close_pos=0.0,
+    closed_gap_m=0.0,
+    open_gap_m=0.0,
+    kp=0.0,
+    kv=0.0,
+    force_lower=0.0,
+    force_upper=0.0,
+    damping=0.0,
+    frictionloss=0.0,
+    tool_tip_link="link_tcp",
+    tcp_offset_mm_deg=(0.0, 0.0, 61.0, 0.0, 0.0, 0.0),
 )
 
 
@@ -336,6 +414,20 @@ def _gripper_params_for(profile: RobotModelSpec, *, gripper: str | None = None) 
         if not profile.supports_robotiq_2f_140:
             raise ValueError(f"Robot {profile.key} does not support gripper {choice!r}")
         return ROBOTIQ_2F_140_GRIPPER_PARAMS
+    if choice == "bare":
+        return None
+    if choice in {"bio_gripper_g2", "bio_g2"}:
+        if not profile.supports_bio_gripper_g2:
+            raise ValueError(f"Robot {profile.key} does not support gripper {choice!r}")
+        return BIO_GRIPPER_G2_GRIPPER_PARAMS
+    if choice == "vacuum_gripper":
+        if not profile.supports_vacuum_gripper:
+            raise ValueError(f"Robot {profile.key} does not support gripper {choice!r}")
+        return VACUUM_GRIPPER_PARAMS
+    if choice == "lite6_vacuum_gripper":
+        if not profile.supports_lite6_vacuum_gripper:
+            raise ValueError(f"Robot {profile.key} does not support gripper {choice!r}")
+        return LITE6_VACUUM_GRIPPER_PARAMS
     raise ValueError(f"Unknown gripper {choice!r} for robot {profile.key}")
 
 

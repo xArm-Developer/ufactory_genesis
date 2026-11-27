@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+URDF_ROOT = PROJECT_ROOT / "assets" / "urdf"
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,16 @@ class RobotModelSpec:
     def supports_camera_stand(self) -> bool:
         return self.supports_accessory("camera_stand")
 
+    def supports_ft_sensor(self, ft_sensor: str) -> bool:
+        """Whether a six-axis force/torque sensor fits this arm's tool flange."""
+        from ufactory.robots.assembly import supports_ft_sensor
+
+        return supports_ft_sensor(self.key, ft_sensor)
+
+    @property
+    def supports_ft_sensor_ai1500(self) -> bool:
+        return self.supports_ft_sensor("ft_sensor_ai1500")
+
     @property
     def supports_mounting_plate(self) -> bool:
         return True
@@ -81,7 +92,7 @@ class RobotModelSpec:
 
 
 def _assets(robot: str) -> Path:
-    return PROJECT_ROOT / "assets" / "urdf" / robot
+    return URDF_ROOT / "robots" / robot
 
 
 def _xarm_profile(dof: int) -> RobotModelSpec:

@@ -149,7 +149,7 @@ def test_stl_visual_override_keeps_the_stl_material(tmp_path: Path) -> None:
     the fingers still show their collision meshes."""
     path = Path(compose_robot_urdf("xarm6", "gripper_g2", visual="stl", out_dir=tmp_path))
     root = ET.parse(path).getroot()
-    meshes = PROJECT_ROOT.resolve() / "assets/urdf/gripper_g2/meshes"
+    meshes = PROJECT_ROOT.resolve() / "assets/urdf/end_effectors/gripper_g2/meshes"
 
     def shown(visual: ET.Element) -> tuple[Path, str]:
         mesh = (path.parent / visual.find("geometry/mesh").get("filename")).resolve()
@@ -280,7 +280,7 @@ def test_bio_gripper_g2_adapter_sits_on_the_xarm_flange() -> None:
     # Flat faces cannot tilt; a tilted mount also breaks TCP-down IK on xArm5 (5-DOF) and xArm6 (wrist).
     assert rpy[:2] == (0.0, 0.0)
     mount = _pose(xyz, rpy)
-    base = PROJECT_ROOT / "assets/urdf/bio_gripper_g2/meshes/visual/visual_glb/bio_gripper_g2_base.glb"
+    base = PROJECT_ROOT / "assets/urdf/end_effectors/bio_gripper_g2/meshes/visual/visual_glb/bio_gripper_g2_base.glb"
     mesh = trimesh.load(base, force="mesh")
     normals = mesh.face_normals @ mount[:3, :3].T
     centres = mesh.triangles_center @ mount[:3, :3].T + mount[:3, 3]
@@ -343,10 +343,10 @@ def test_validate_robot_urdf_never_composes(monkeypatch: pytest.MonkeyPatch) -> 
         raise AssertionError("validation must not compose")
 
     monkeypatch.setattr(assembly, "compose_robot_urdf", _fail)
-    validate_robot_urdf("xarm6", "assembly:gripper_g2", assets_dir="assets/urdf/xarm6", store=store)
-    validate_robot_urdf("xarm6", "xarm6_1305.urdf", assets_dir="assets/urdf/xarm6", store=store)
+    validate_robot_urdf("xarm6", "assembly:gripper_g2", assets_dir="assets/urdf/robots/xarm6", store=store)
+    validate_robot_urdf("xarm6", "xarm6_1305.urdf", assets_dir="assets/urdf/robots/xarm6", store=store)
     with pytest.raises(AssemblyError):
-        validate_robot_urdf("lite6", "assembly:gripper_g2", assets_dir="assets/urdf/lite6", store=store)
+        validate_robot_urdf("lite6", "assembly:gripper_g2", assets_dir="assets/urdf/robots/lite6", store=store)
 
 
 def test_visual_glb_wrapper_maps_flags_to_assemblies() -> None:

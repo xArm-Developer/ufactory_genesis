@@ -6,7 +6,7 @@ robot:
   dof: 7
   joint_names: [joint1, joint2, joint3, joint4, joint5, joint6, joint7]
   ee_link: link7
-  assets_dir: assets/urdf/xarm7
+  assets_dir: assets/urdf/robots/xarm7
   urdf: "assembly:gripper_g2"
   capabilities: [servo_j, servo_cartesian, gripper_g2, sdk_sim]
   environment_contact_pairs: [[link_base, table]]
@@ -41,3 +41,4 @@ gripper:
   finger_close_descent_m: 0.015
   grasp_table_clearance_m: 0.010
   grasp_height_extra_m: 0.0
+  tcp_offset: [0.0, 0.0, 178.6, 0.0, 0.0, 0.0]

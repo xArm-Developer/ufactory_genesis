@@ -57,7 +57,7 @@ PLATES: dict[str, dict[str, object]] = {
         "x_bounds_mm": (-95.0, 95.0),
         "y_bounds_mm": (-130.0, 130.0),
         "collision_count": 1,
-        "mass_kg": 0.9141612212,
+        "mass_kg": 1.056,
         "mount_xyz": (0.0, 0.0, 0.0),
         "solid_xy_mm": (0.0, 105.0),
     },
@@ -163,7 +163,9 @@ def test_path_helpers_and_asset_store_support_mounting_plates(tmp_path: Path) ->
     from ufactory.config import RepositoryAssetStore
 
     store = RepositoryAssetStore(PROJECT_ROOT)
-    validate_robot_urdf("xarm6_1305", "assembly:gripper_g2+mounting_plate", assets_dir="assets/urdf/xarm6", store=store)
+    validate_robot_urdf(
+        "xarm6_1305", "assembly:gripper_g2+mounting_plate", assets_dir="assets/urdf/robots/xarm6", store=store
+    )
     resolved = resolve_robot_urdf("lite6", "assembly:bare+mounting_plate", store=store)
     assert resolved == Path(compose_robot_urdf("lite6", None, mounting_plate=True))
 
@@ -282,6 +284,78 @@ def _is_convex(mesh, tol_m: float = 1e-6) -> bool:
     return bool((vertices @ normals.T - offsets).max() <= tol_m)
 
 
+def test_mounting_plate_urdf_inertials() -> None:
+    """Validate plate URDF masses and inertia tensors without optional mesh dependencies."""
+    uf850_expected_inertia = {
+        "ixx": 0.007494367693,
+        "ixy": 2.827268798e-09,
+        "ixz": 8.907087421e-11,
+        "iyy": 0.003785981885,
+        "iyz": -2.155216145e-11,
+        "izz": 0.0112627498,
+    }
+    for plate, cfg in PLATES.items():
+        root = ET.parse(URDF_ROOT / "mounts" / plate / f"{plate}.urdf").getroot()
+        inertial = root.find(f"./link[@name='{plate}']/inertial")
+        assert inertial is not None
+        mass = float(inertial.find("mass").attrib["value"])  # type: ignore[union-attr]
+        assert mass == pytest.approx(float(cfg["mass_kg"]), rel=0.0, abs=1e-10)
+        xyz = tuple(float(v) for v in inertial.find("origin").attrib["xyz"].split())  # type: ignore[union-attr]
+        i = {k: float(v) for k, v in inertial.find("inertia").attrib.items()}  # type: ignore[union-attr]
+        tensor = np.array(
+            [[i["ixx"], i["ixy"], i["ixz"]], [i["ixy"], i["iyy"], i["iyz"]], [i["ixz"], i["iyz"], i["izz"]]]
+        )
+        eig = np.linalg.eigvalsh(tensor)
+        assert eig.min() > 0.0 and eig[0] + eig[1] > eig[2]
+        if plate == "uf850_mounting_plate":
+            assert mass == pytest.approx(1.056, rel=0.0, abs=1e-12)
+            assert xyz == pytest.approx((-5.112679085e-08, -1.296273053e-07, -0.005000003168), rel=0.0, abs=1e-12)
+            for key, expected_val in uf850_expected_inertia.items():
+                assert i[key] == pytest.approx(expected_val, rel=0.0, abs=1e-12), key
+
+
+def test_mounting_plate_materials_match_arm_flanges() -> None:
+    """Validate plate GLB PBR and URDF materials match the arm flange metal without optional mesh deps."""
+    flange_glbs = (
+        "robots/xarm6/meshes/xarm6_1305/visual_glb/link6.glb",
+        "robots/uf850/meshes/uf850/visual_glb/link6.glb",
+        "robots/lite6/meshes/lite6/visual_glb/link6.glb",
+    )
+    for plate in PLATES:
+        plate_dir = URDF_ROOT / "mounts" / plate
+        meta = _glb_json(plate_dir / "meshes" / "visual" / f"{plate}.glb")
+        assert meta["extensionsRequired"] == ["KHR_draco_mesh_compression"]
+        mats = meta["materials"]
+        assert isinstance(mats, list) and len(mats) == 1
+        assert mats[0]["name"] == "plate_anodized_aluminum"
+        pbr = mats[0]["pbrMetallicRoughness"]
+        np.testing.assert_allclose(
+            pbr["baseColorFactor"],
+            [0.9529411764705883, 0.9529411764705883, 0.9490196078431372, 1.0],
+            atol=1e-5,
+        )
+        assert pbr["metallicFactor"] == pytest.approx(0.8, abs=1e-5)
+        assert pbr["roughnessFactor"] == pytest.approx(0.640130877494812, abs=1e-5)
+
+        for arm_glb in flange_glbs:
+            arm_meta = _glb_json(URDF_ROOT / arm_glb)
+            arm_metals = [
+                m["pbrMetallicRoughness"]
+                for m in arm_meta["materials"]  # type: ignore[index]
+                if m.get("pbrMetallicRoughness", {}).get("metallicFactor", 0.0) > 0.5
+            ]
+            assert len(arm_metals) == 1, arm_glb
+            np.testing.assert_allclose(pbr["baseColorFactor"], arm_metals[0]["baseColorFactor"], atol=1e-5)
+            assert pbr["metallicFactor"] == pytest.approx(arm_metals[0]["metallicFactor"], abs=1e-5)
+            assert pbr["roughnessFactor"] == pytest.approx(arm_metals[0]["roughnessFactor"], abs=0.01)
+
+        root = ET.parse(plate_dir / f"{plate}.urdf").getroot()
+        color = root.find("./material[@name='PlateAluminum']/color")
+        assert color is not None
+        rgba = [float(v) for v in color.attrib["rgba"].split()]
+        np.testing.assert_allclose(rgba, [0.952941, 0.952941, 0.94902, 1.0], atol=1e-5)
+
+
 @pytest.mark.parametrize("plate", tuple(PLATES))
 def test_plate_assets_geometry_openings_and_inertials(plate: str) -> None:
     trimesh = pytest.importorskip("trimesh")
@@ -289,7 +363,7 @@ def test_plate_assets_geometry_openings_and_inertials(plate: str) -> None:
     pytest.importorskip("pygltflib")
 
     cfg = PLATES[plate]
-    plate_dir = URDF_ROOT / plate
+    plate_dir = URDF_ROOT / "mounts" / plate
     glb = plate_dir / "meshes" / "visual" / f"{plate}.glb"
     assert glb.stat().st_size < 1_000_000
     meta = _glb_json(glb)

@@ -3,7 +3,7 @@
 Robot-generic Genesis scene builder for the pick-place trajectory pipeline
 (originally written for xArm6 scripted pick-place demos). Returns a typed
 context (entities, dof indices, PD gains, finger offsets, key heights) reused
-across xArm5/6/7, UF850 (Gripper G2) and Lite6 (parallel gripper). Single
+across xArm5/6/7, UF850 (Gripper G2 / Bio Gripper G2) and Lite6 (parallel gripper). Single
 environment, robot base at table height.
 """
 
@@ -72,8 +72,8 @@ class TrajSceneContext:
     obj: object
     target_marker: object
     ik_link: object
-    left_finger: object
-    right_finger: object
+    left_finger: object | None
+    right_finger: object | None
     arm_dof_idx: list[int]
     gripper_dof_idx: list[int]
     all_gripper_dof_idx: list[int]
@@ -116,6 +116,11 @@ class TrajSceneContext:
     robotiq_settings: object | None = None
     robotiq_controller: object | None = None
     simulation_parameters: dict = field(default_factory=dict)
+    sim_rate_hz: float = 50.0
+    arm_controller: object | None = None
+    gripper_dof_multipliers: tuple[float, ...] = ()
+    tool_tip_link: object | None = None
+    tcp_offset_flange_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
     def base_to_world(self, pos_base) -> list[float]:
         """Convert a base-frame xyz (m) to the Genesis world frame (m)."""
@@ -159,28 +164,75 @@ def _robot_urdf_for_visual_model(runtime: RobotRuntimeProfile, visual_model: str
         return compose_robot_urdf(profile.key, "gripper_g2", visual="stl"), False
     if model != "glb":
         raise ValueError("visual_model must be 'glb' or 'stl'")
-    if gripper is not None and gripper.family == "lite6":
+    if gripper is None:
+        from ufactory.robots.paths import robot_visual_glb_urdf
+
+        return robot_visual_glb_urdf(profile.key), True
+    if gripper.family == "lite6":
         return compose_robot_urdf(profile.key, "lite6_gripper"), True
-    if gripper is not None and gripper.family == "g2":
+    if gripper.family == "g2":
         return compose_robot_urdf(profile.key, "gripper_g2"), True
-    if gripper is not None and gripper.family in {"robotiq_2f_85", "robotiq_2f_140"}:
+    if gripper.family == "bio_gripper_g2":
+        return compose_robot_urdf(profile.key, "bio_gripper_g2"), True
+    if gripper.family in {"robotiq_2f_85", "robotiq_2f_140", "vacuum_gripper", "lite6_vacuum_gripper"}:
         return compose_robot_urdf(profile.key, gripper.family), True
     raise ValueError(f"{profile.key} has no supported gripper for the trajectory scene")
 
 
+def gripper_dof_multipliers(gripper: GripperControlParams | None) -> tuple[float, ...]:
+    """Return per-DOF sign multipliers aligned with ``gripper.all_joint_names``.
+
+    In ``bio_gripper_g2``, ``bio_gripper_g2_left_finger_joint`` mimics the right
+    finger with ``multiplier="-1"`` and joint limits ``[-0.0395, 0]``.
+    """
+    if gripper is None or not gripper.all_joint_names:
+        return ()
+    if gripper.family == "bio_gripper_g2":
+        from ufactory.grippers.bio_g2 import LEFT_JOINT
+
+        return tuple(-1.0 if name == LEFT_JOINT else 1.0 for name in gripper.all_joint_names)
+    return tuple(1.0 for _ in gripper.all_joint_names)
+
+
 def _robot_defaults(robot_key: str, *, gripper: str | None = None) -> dict:
     """Per-robot default scene geometry (object/place xy, key heights)."""
+    from ufactory.manipulation.tcp import resolve_tool_tcp_spec
+
     runtime = get_robot_runtime_profile(robot_key, gripper=gripper)
-    config = load_runtime_config(runtime.model.key, gripper=gripper)
+    is_zero_dof_choice = gripper in {"bare", "vacuum_gripper", "lite6_vacuum_gripper"}
+    config = load_runtime_config(runtime.model.key, gripper=None if is_zero_dof_choice else gripper)
     params = config.task.parameters
     object_spec = resolve_pick_place_object_spec(config)
-    gripper_profile = config.gripper
-    if gripper_profile is None:
-        raise ValueError(f"{runtime.model.key} has no configured gripper geometry")
     obj_pos_base = tuple(float(value) for value in params["fixed_object_position_m"])
     place_pos_base = tuple(float(value) for value in params["fixed_target_position_m"])
     default_ee = tuple(float(value) for value in params["default_ee_position_m"])
     is_lite6 = runtime.model.key == "lite6"
+    if is_zero_dof_choice:
+        tool_tcp = resolve_tool_tcp_spec(runtime.gripper)
+        return {
+            "base_pos": DEFAULT_ROBOT_BASE_POS,
+            "obj_xy": obj_pos_base[:2],
+            "place_xy": place_pos_base[:2],
+            "obj_pos_base": obj_pos_base,
+            "place_pos_base": place_pos_base,
+            "obj_size": object_spec.size_m,
+            "obj_mass_kg": object_spec.mass_kg,
+            "lift_z": default_ee[2],
+            "home_z": default_ee[2],
+            "grasp_gap_m": 0.0,
+            "tool_tip_offset_z_m": tool_tcp.tcp_offset_flange_m[2],
+            "finger_pad_below_center_m": 0.0,
+            "finger_close_descent_m": 0.0,
+            "grasp_table_clearance_m": 0.010,
+            "grasp_height_extra_m": 0.0,
+            "excluded_geometry_pairs": (),
+            "default_qpos_rad": config.arm.default_qpos_rad,
+            "tcp_offset_flange_m": tool_tcp.tcp_offset_flange_m,
+        }
+    gripper_profile = config.gripper
+    if gripper_profile is None:
+        raise ValueError(f"{runtime.model.key} has no configured gripper geometry")
+    tool_tcp = resolve_tool_tcp_spec(config)
     return {
         "base_pos": DEFAULT_ROBOT_BASE_POS,
         "obj_xy": obj_pos_base[:2],
@@ -198,6 +250,8 @@ def _robot_defaults(robot_key: str, *, gripper: str | None = None) -> dict:
         "grasp_table_clearance_m": gripper_profile.grasp_table_clearance_m,
         "grasp_height_extra_m": gripper_profile.grasp_height_extra_m,
         "excluded_geometry_pairs": gripper_profile.excluded_geometry_pairs,
+        "default_qpos_rad": config.arm.default_qpos_rad,
+        "tcp_offset_flange_m": tool_tcp.tcp_offset_flange_m,
     }
 
 
@@ -219,14 +273,14 @@ class DryHeights:
     grasp_link6_z: float
     pre_grasp_link6_z: float
     lift_link6_z: float
-    gripper: GripperControlParams
+    gripper: GripperControlParams | None
 
 
 def dry_heights(robot_key: str, *, gripper: str | None = None) -> DryHeights:
     """Build a :class:`DryHeights` for ``robot_key`` without a Genesis scene."""
     runtime = get_robot_runtime_profile(robot_key, gripper=gripper)
     resolved_gripper = runtime.gripper
-    if resolved_gripper is None:
+    if resolved_gripper is None and gripper != "bare":
         raise ValueError(f"{runtime.model.key} has no supported gripper for the trajectory scene")
     defaults = _robot_defaults(runtime.model.key, gripper=gripper)
     obj_xy = defaults["obj_xy"]
@@ -280,6 +334,8 @@ def build_scene(
     robotiq_settings: object | None = None,
     gripper: str | None = None,
     excluded_geometry_pairs: tuple[tuple[str, str], ...] | None = None,
+    arm_controller: object | None = None,
+    home_xy_base: tuple[float, float] | None = None,
 ) -> TrajSceneContext:
     """Build the single-env Genesis scene and configure PD gains + finger offsets.
 
@@ -291,17 +347,18 @@ def build_scene(
     runtime = get_robot_runtime_profile(robot_key, gripper=gripper)
     profile = runtime.model
     resolved_gripper = runtime.gripper
-    if resolved_gripper is None:
+    if resolved_gripper is None and gripper != "bare":
         raise ValueError(f"{profile.key} has no supported gripper for the trajectory scene")
     defaults = _robot_defaults(profile.key, gripper=gripper)
     gripper_spec = resolved_gripper
-    # Keep local name ``gripper`` bound to GripperControlParams cleanly below.
+    gripper_family = gripper_spec.family if gripper_spec is not None else None
+    # Keep local name ``gripper`` bound cleanly below.
 
     dt = 1.0 / float(rate)
-    if gripper_spec.family == "g2":
+    if gripper_family == "g2":
         validate_g2_contact_substeps(dt=dt, substeps=substeps)
-    elif gripper_spec.family in {"robotiq_2f_85", "robotiq_2f_140"}:
-        validate_robotiq_contact_substeps(dt=dt, substeps=substeps, variant=gripper_spec.family)
+    elif gripper_family in {"robotiq_2f_85", "robotiq_2f_140"}:
+        validate_robotiq_contact_substeps(dt=dt, substeps=substeps, variant=gripper_family)
     substeps = int(substeps)
 
     robot_base = tuple(float(v) for v in (base_pos if base_pos is not None else defaults["base_pos"]))
@@ -332,6 +389,12 @@ def build_scene(
         raise ValueError("obj_mass_kg must be finite and positive")
     obj_xy = obj_pos_base[:2]
     place_xy = place_pos_base[:2]
+    if home_xy_base is not None:
+        if len(home_xy_base) != 2 or not all(math.isfinite(float(value)) for value in home_xy_base):
+            raise ValueError("home_xy_base must contain two finite values")
+        resolved_home_xy = (float(home_xy_base[0]), float(home_xy_base[1]))
+    else:
+        resolved_home_xy = obj_xy
     lift_z = float(lift_z) if lift_z is not None else defaults["lift_z"]
     home_z = float(home_z) if home_z is not None else defaults["home_z"]
 
@@ -348,10 +411,12 @@ def build_scene(
             robot_name=profile.robot_name,
             joint_count=profile.dof,
         )
-    is_robotiq = gripper_spec.family in {"robotiq_2f_85", "robotiq_2f_140"}
-    is_calibrated_g2 = calibrated_g2 and gripper_spec.family == "g2"
+    is_robotiq = gripper_family in {"robotiq_2f_85", "robotiq_2f_140"}
+    is_calibrated_g2 = calibrated_g2 and gripper_family == "g2"
     is_calibrated_robotiq = calibrated_g2 and is_robotiq
     is_calibrated_adaptive = is_calibrated_g2 or is_calibrated_robotiq
+    has_finger_links = bool(gripper_spec is not None and gripper_spec.has_finger_links)
+    has_actuated_joints = bool(gripper_spec is not None and gripper_spec.has_actuated_joints)
     if constraint_timeconst is None:
         constraint_timeconst = 0.00125 if is_calibrated_adaptive else RIGID_CONSTRAINT_TIMECONST
     substep_dt = dt / int(substeps)
@@ -436,21 +501,29 @@ def build_scene(
 
     ee_link_name = profile.ee_link
     ik_link = robot.get_link(ee_link_name)
-    left_finger = robot.get_link(gripper_spec.finger_link_names[0])
-    right_finger = robot.get_link(gripper_spec.finger_link_names[1])
+    left_finger = robot.get_link(gripper_spec.finger_link_names[0]) if has_finger_links and gripper_spec else None
+    right_finger = robot.get_link(gripper_spec.finger_link_names[1]) if has_finger_links and gripper_spec else None
+    tool_tip_link = None
+    if gripper_spec is not None and gripper_spec.tool_tip_link:
+        try:
+            tool_tip_link = robot.get_link(gripper_spec.tool_tip_link)
+        except Exception:
+            tool_tip_link = None
 
-    if gripper_spec.family == "g2":
+    if gripper_family == "g2":
         configure_g2_mimic_constraints(robot)
-    elif is_robotiq:
-        configure_robotiq_mimic_constraints(robot, gripper_spec.family)
+    elif is_robotiq and gripper_family is not None:
+        configure_robotiq_mimic_constraints(robot, gripper_family)
     if contact_sol_params is not None:
-        _set_contact_sol_params((obj, left_finger, right_finger), contact_sol_params)
+        sol_targets = tuple(item for item in (obj, left_finger, right_finger) if item is not None)
+        _set_contact_sol_params(sol_targets, contact_sol_params)
 
     # Configured painted-wood cube + silicone fingertip pads (μ=1.2).
     # Stiffness: leave default rigid contact sol_params. Set before any stepping.
     obj.set_friction(float(OBJ_FRICTION))
-    left_finger.set_friction(float(FINGER_FRICTION))
-    right_finger.set_friction(float(FINGER_FRICTION))
+    if left_finger is not None and right_finger is not None:
+        left_finger.set_friction(float(FINGER_FRICTION))
+        right_finger.set_friction(float(FINGER_FRICTION))
     if hasattr(obj, "set_links_mass"):
         obj.set_links_mass(torch.tensor([obj_mass_kg], device=gs.device, dtype=gs.tc_float))
     else:
@@ -458,8 +531,12 @@ def build_scene(
 
     jnames = joint_names(profile)
     arm_dof_idx = [robot.get_joint(n).dofs_idx_local[0] for n in jnames]
-    gripper_dof_idx = [robot.get_joint(gripper_spec.drive_joint).dofs_idx_local[0]]
-    all_gripper_dof_idx = [robot.get_joint(n).dofs_idx_local[0] for n in gripper_spec.all_joint_names]
+    if has_actuated_joints and gripper_spec is not None and gripper_spec.drive_joint is not None:
+        gripper_dof_idx = [robot.get_joint(gripper_spec.drive_joint).dofs_idx_local[0]]
+        all_gripper_dof_idx = [robot.get_joint(n).dofs_idx_local[0] for n in gripper_spec.all_joint_names]
+    else:
+        gripper_dof_idx = []
+        all_gripper_dof_idx = []
 
     runtime_arm = runtime.arm
     robot.set_dofs_kp(
@@ -475,90 +552,118 @@ def build_scene(
         torch.tensor(runtime_arm.force_upper, device=gs.device, dtype=gs.tc_float),
         arm_dof_idx,
     )
-    robot.set_dofs_kp(
-        torch.tensor([gripper_spec.kp], device=gs.device, dtype=gs.tc_float),
-        gripper_dof_idx,
-    )
-    robot.set_dofs_kv(
-        torch.tensor([gripper_spec.kv], device=gs.device, dtype=gs.tc_float),
-        gripper_dof_idx,
-    )
-    robot.set_dofs_force_range(
-        torch.tensor([gripper_spec.force_lower], device=gs.device, dtype=gs.tc_float),
-        torch.tensor([gripper_spec.force_upper], device=gs.device, dtype=gs.tc_float),
-        gripper_dof_idx,
-    )
-    n_grip = len(all_gripper_dof_idx)
-    robot.set_dofs_damping(
-        torch.full((n_grip,), gripper_spec.damping, device=gs.device, dtype=gs.tc_float),
-        all_gripper_dof_idx,
-    )
-    robot.set_dofs_frictionloss(
-        torch.full((n_grip,), gripper_spec.frictionloss, device=gs.device, dtype=gs.tc_float),
-        all_gripper_dof_idx,
-    )
-    if is_calibrated_g2:
-        from ufactory.simulation.g2_adapter import configure_g2_drive
-
-        configure_g2_drive(robot, damping=gripper_spec.damping, frictionloss=gripper_spec.frictionloss)
-    elif is_calibrated_robotiq:
-        from ufactory.simulation.robotiq_adapter import configure_robotiq_drive
-
-        configure_robotiq_drive(
-            robot,
-            gripper_spec.family,
-            damping=gripper_spec.damping,
-            frictionloss=gripper_spec.frictionloss,
-        )
-    elif gripper_spec.family == "lite6":
-        from ufactory.grippers.lite6 import configure_lite6_gripper_drive
-
-        configure_lite6_gripper_drive(
-            robot,
+    if has_actuated_joints and gripper_spec is not None:
+        robot.set_dofs_kp(
+            torch.tensor([gripper_spec.kp], device=gs.device, dtype=gs.tc_float),
             gripper_dof_idx,
-            all_gripper_dof_idx,
-            kp=gripper_spec.kp,
-            kv=gripper_spec.kv,
-            force_lower_n=gripper_spec.force_lower,
-            force_upper_n=gripper_spec.force_upper,
-            damping=gripper_spec.damping,
-            frictionloss=gripper_spec.frictionloss,
         )
+        robot.set_dofs_kv(
+            torch.tensor([gripper_spec.kv], device=gs.device, dtype=gs.tc_float),
+            gripper_dof_idx,
+        )
+        robot.set_dofs_force_range(
+            torch.tensor([gripper_spec.force_lower], device=gs.device, dtype=gs.tc_float),
+            torch.tensor([gripper_spec.force_upper], device=gs.device, dtype=gs.tc_float),
+            gripper_dof_idx,
+        )
+        n_grip = len(all_gripper_dof_idx)
+        robot.set_dofs_damping(
+            torch.full((n_grip,), gripper_spec.damping, device=gs.device, dtype=gs.tc_float),
+            all_gripper_dof_idx,
+        )
+        robot.set_dofs_frictionloss(
+            torch.full((n_grip,), gripper_spec.frictionloss, device=gs.device, dtype=gs.tc_float),
+            all_gripper_dof_idx,
+        )
+        if is_calibrated_g2:
+            from ufactory.simulation.g2_adapter import configure_g2_drive
+
+            configure_g2_drive(robot, damping=gripper_spec.damping, frictionloss=gripper_spec.frictionloss)
+        elif is_calibrated_robotiq:
+            from ufactory.simulation.robotiq_adapter import configure_robotiq_drive
+
+            configure_robotiq_drive(
+                robot,
+                gripper_spec.family,
+                damping=gripper_spec.damping,
+                frictionloss=gripper_spec.frictionloss,
+            )
+        elif gripper_spec.family == "lite6":
+            from ufactory.grippers.lite6 import configure_lite6_gripper_drive
+
+            configure_lite6_gripper_drive(
+                robot,
+                gripper_dof_idx,
+                all_gripper_dof_idx,
+                kp=gripper_spec.kp,
+                kv=gripper_spec.kv,
+                force_lower_n=gripper_spec.force_lower,
+                force_upper_n=gripper_spec.force_upper,
+                damping=gripper_spec.damping,
+                frictionloss=gripper_spec.frictionloss,
+            )
 
     dq = xyz_to_quat(
         torch.tensor([GRIPPER_DOWN_RPY_RAD], device=gs.device, dtype=gs.tc_float),
         rpy=True,
         degrees=False,
     )
-    home_pos_base = [obj_xy[0], obj_xy[1], home_z]
+    home_pos_base = [resolved_home_xy[0], resolved_home_xy[1], home_z]
     home_pos = _base_to_world(robot_base, home_pos_base)
     home_link6_pos = torch.tensor([home_pos], device=gs.device, dtype=gs.tc_float)
-    home_qpos_result = solve_home_ik(robot, ik_link, home_link6_pos, dq, arm_dof_idx=arm_dof_idx)
+    home_controller = arm_controller
+    if home_controller is None and profile.dof == 5:
+        from ufactory.control import ArmMotionController
+
+        home_controller = ArmMotionController.from_robot(profile.key, urdf_path=robot_urdf_path)
+    home_qpos_result = solve_home_ik(
+        robot,
+        ik_link,
+        home_link6_pos,
+        dq,
+        arm_dof_idx=arm_dof_idx,
+        arm_controller=home_controller,
+        target_pos_base=home_pos_base,
+        default_qpos_rad=defaults["default_qpos_rad"],
+    )
     init_qpos = torch.zeros(1, robot.n_dofs, device=gs.device, dtype=gs.tc_float)
     for i, idx in enumerate(arm_dof_idx):
         init_qpos[:, idx] = home_qpos_result[0, arm_dof_idx[i]]
-    for idx in all_gripper_dof_idx:
-        if is_calibrated_g2:
-            from ufactory.simulation.g2_model import G2Model
+    multipliers = gripper_dof_multipliers(gripper_spec)
+    if has_actuated_joints and gripper_spec is not None:
+        for i, idx in enumerate(all_gripper_dof_idx):
+            if is_calibrated_g2:
+                from ufactory.simulation.g2_model import G2Model
 
-            init_qpos[:, idx] = G2Model.load().linkage.drive_for_gap_m(0.084)
-        elif is_calibrated_robotiq:
-            from ufactory.simulation.robotiq_model import RobotiqModel
+                init_qpos[:, idx] = G2Model.load().linkage.drive_for_gap_m(0.084)
+            elif is_calibrated_robotiq:
+                from ufactory.simulation.robotiq_model import RobotiqModel
 
-            init_qpos[:, idx] = RobotiqModel.load(gripper_spec.family).linkage.drive_for_gap_m(gripper_spec.open_gap_m)
-        else:
-            init_qpos[:, idx] = gripper_spec.open_pos
+                init_qpos[:, idx] = RobotiqModel.load(gripper_spec.family).linkage.drive_for_gap_m(
+                    gripper_spec.open_gap_m
+                )
+            else:
+                init_qpos[:, idx] = gripper_spec.open_pos * multipliers[i]
     robot.set_qpos(init_qpos)
     scene.step()
 
     link6_pos = ik_link.get_pos()[0]
-    lf_pos = left_finger.get_pos()[0]
-    rf_pos = right_finger.get_pos()[0]
-    fc_pos = (lf_pos + rf_pos) / 2
-    finger_z_offset = (link6_pos[2] - fc_pos[2]).item()
-    # Finger-span across the open gap: fingers separate mainly along y when
-    # the gripper points down, so use the larger of |dy|/|dx| as the span.
-    finger_y_gap = max(abs(lf_pos[1] - rf_pos[1]).item(), abs(lf_pos[0] - rf_pos[0]).item())
+    tcp_offset_flange_m = tuple(float(v) for v in defaults["tcp_offset_flange_m"])
+    if left_finger is not None and right_finger is not None:
+        lf_pos = left_finger.get_pos()[0]
+        rf_pos = right_finger.get_pos()[0]
+        fc_pos = (lf_pos + rf_pos) / 2
+        finger_z_offset = (link6_pos[2] - fc_pos[2]).item()
+        # Finger-span across the open gap: fingers separate mainly along y when
+        # the gripper points down, so use the larger of |dy|/|dx| as the span.
+        finger_y_gap = max(abs(lf_pos[1] - rf_pos[1]).item(), abs(lf_pos[0] - rf_pos[0]).item())
+    elif tool_tip_link is not None:
+        tip_pos = tool_tip_link.get_pos()[0]
+        finger_z_offset = (link6_pos[2] - tip_pos[2]).item()
+        finger_y_gap = 0.0
+    else:
+        finger_z_offset = float(tcp_offset_flange_m[2])
+        finger_y_gap = 0.0
 
     pad_below_fc = float(defaults["finger_pad_below_center_m"])
     close_descent = float(defaults["finger_close_descent_m"])
@@ -566,7 +671,7 @@ def build_scene(
     grasp_extra = float(defaults["grasp_height_extra_m"])
 
     grasp_link6_z = table_clearance + close_descent + pad_below_fc + finger_z_offset + grasp_extra
-    if is_calibrated_adaptive:
+    if is_calibrated_adaptive and gripper_spec is not None:
         grasp_link6_z = dry_heights(profile.key, gripper=gripper_spec.family).grasp_link6_z
     pre_grasp_link6_z = grasp_link6_z + 0.10
     lift_link6_z = lift_z
@@ -609,6 +714,7 @@ def build_scene(
         robotiq_settings=robotiq_settings,
         simulation_parameters={
             "rate_hz": rate,
+            "sim_rate_hz": float(rate),
             "substeps": substeps,
             "constraint_time_constant_s": constraint_timeconst,
             "constraint_solver": constraint_solver,
@@ -618,6 +724,11 @@ def build_scene(
             "contact_resolution": contact_resolution,
             "use_gjk_collision": use_gjk_collision,
         },
+        sim_rate_hz=float(rate),
+        arm_controller=arm_controller if arm_controller is not None else home_controller,
+        gripper_dof_multipliers=multipliers,
+        tool_tip_link=tool_tip_link,
+        tcp_offset_flange_m=(tcp_offset_flange_m[0], tcp_offset_flange_m[1], tcp_offset_flange_m[2]),
     )
     if is_calibrated_g2:
         from ufactory.simulation.g2_adapter import G2GenesisController
@@ -642,12 +753,18 @@ def build_scene(
     return ctx
 
 
-def drive_for_gap_m(gap_m: float, gripper: GripperControlParams) -> float:
+def drive_for_gap_m(gap_m: float, gripper: GripperControlParams | None) -> float:
     """Convert pad gap (m) using G2/Robotiq geometry or linear prismatic travel."""
+    if gripper is None or not getattr(gripper, "has_actuated_joints", bool(getattr(gripper, "all_joint_names", ()))):
+        return 0.0
     if gripper.family == "g2":
         from ufactory.grippers.g2 import gripper_g2_gap_m_to_sim_drive
 
         return gripper_g2_gap_m_to_sim_drive(gap_m)
+    if gripper.family == "bio_gripper_g2":
+        from ufactory.grippers.bio_g2 import bio_gripper_g2_gap_m_to_sim_drive
+
+        return bio_gripper_g2_gap_m_to_sim_drive(gap_m)
     if gripper.family in {"robotiq_2f_85", "robotiq_2f_140"}:
         from ufactory.grippers.robotiq import robotiq_gap_m_to_sim_drive
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from ufactory.robots.assembly import accessories, mounting_plate_for
+from ufactory.robots.assembly import accessories, ft_sensors, mounting_plate_for
 from ufactory.robots.paths import robot_visual_glb_urdf
 from ufactory.robots.registry import get_robot_profile, robot_cli_choices
 from ufactory.visualization.robot_viewer import run_glb_diagnose, run_glb_viewer
@@ -54,6 +54,14 @@ def main() -> None:
         default=None,
         help="Mount the camera stand (camera_stand) or a camera on it between the flange and the end effector "
         "(all robots; bare arm or any end effector except --bio-gripper-g2)",
+    )
+    parser.add_argument(
+        "--ft-sensor",
+        nargs="?",
+        const="ft_sensor_ai1500",
+        default=None,
+        choices=tuple(ft_sensors()),
+        help="Mount a six-axis F/T sensor on the tool flange (default: ft_sensor_ai1500; xArm5/6/7 and UF850)",
     )
     parser.add_argument(
         "--mounting-plate",
@@ -157,6 +165,8 @@ def main() -> None:
         ),
         None,
     )
+    if args.ft_sensor and not profile.supports_ft_sensor(args.ft_sensor):
+        parser.error(f"--ft-sensor {args.ft_sensor} is not supported on {args.robot}")
     if args.camera and not profile.supports_accessory(args.camera, end_effector):
         parser.error(f"--camera {args.camera} does not fit {args.robot} with {end_effector or 'no end effector'}")
 
@@ -182,6 +192,7 @@ def main() -> None:
         movable=args.movable,
         accessory=args.camera,
         mounting_plate=args.mounting_plate,
+        ft_sensor=args.ft_sensor,
     )
     floor_z = -mounting_plate_for(profile.key).thickness_m if args.mounting_plate else 0.0
     print(f"Loading: {urdf_path}")

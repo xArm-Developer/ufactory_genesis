@@ -34,13 +34,18 @@ EXAMPLE = PROJECT_ROOT / "examples" / "rl" / "pick_place"
         (("environment", "success_hold_steps"), 10),
         (("reward", "approach_potential"), 8.0),
         (("reward", "grasp_potential"), 4.0),
-        (("reward", "release_potential"), 4.0),
+        (("reward", "lift_drive_potential"), 1.2),
+        (("reward", "place_potential"), 9.0),
+        (("reward", "release_potential"), 8.0),
+        (("reward", "hold_potential"), 8.0),
+        (("reward", "pre_lift_stall_penalty"), 0.04),
         (("reward", "lift_potential"), 40.0),
         (("reward", "transit_potential"), 8.0),
         (("reward", "success"), 40.0),
         (("train", "algorithm", "class_name"), "PPO"),
         (("train", "algorithm", "learning_rate"), 3e-4),
         (("train", "actor", "class_name"), "MLPModel"),
+        (("train", "actor", "distribution_cfg", "std_range"), [0.16, 0.65]),
         (("train", "critic", "class_name"), "MLPModel"),
         (("train", "runner", "max_iterations"), 2000),
         (("train", "runner", "early_stop_evaluations"), 2),
@@ -77,7 +82,7 @@ def test_pick_place_task_configs_bind_current_runtime_hash() -> None:
     assert env_cfg["runtime_config_sha256"] == rl_config.sha256
     assert env_cfg["num_obs"] == 70
     assert env_cfg["num_actions"] == 4
-    assert reward_cfg["release_potential"] == pytest.approx(4.0)
+    assert reward_cfg["release_potential"] == pytest.approx(8.0)
     assert set(robot_cfg) == {"gripper_damping", "gripper_frictionloss"}
 
 

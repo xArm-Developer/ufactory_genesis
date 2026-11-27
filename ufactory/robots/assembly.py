@@ -10,13 +10,14 @@ identical bytes (and ``sha256``) on every checkout. File names are content-addre
 Runtime configurations and :func:`ufactory.robots.paths.robot_urdf` accept an assembly reference in place of a
 URDF file name::
 
-    assembly:<end_effector>[+<accessory>][+mounting_plate][:<visual>]
+    assembly:<end_effector>[+<ft_sensor>][+<accessory>][+mounting_plate][:<visual>]
+    assembly:bare+<ft_sensor>[+<accessory>][+mounting_plate][:<visual>]
     assembly:bare+<accessory>[+mounting_plate][:<visual>]
     assembly:bare+mounting_plate[:<visual>]
 
 ``bare`` means no end effector. ``visual`` is ``glb`` (default, per-link GLB arm and gripper visuals) or ``stl`` (the
-arm's dynamics URDF; end-effector GLB visuals are replaced by their collision geometry; cameras and mounting plates draw
-their collision geometry).
+arm's dynamics URDF; end-effector GLB visuals are replaced by their collision geometry; cameras, F/T sensors, and
+mounting plates draw their STL/collision geometry).
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ COMPOSER_VERSION = "1"
 
 BARE = "bare"
 MOUNTING_PLATE = "mounting_plate"
+FT_SENSOR_PREFIX = "ft_sensor_"
 
 
 class AssemblyError(ValueError):
@@ -81,6 +83,22 @@ class Adapter:
     name: str
     source: str
     base_link: str
+    mount_joint: str
+    flange: str
+    robots: tuple[str, ...]
+    mount: Pose
+    tool_lift_m: float
+    glb_visuals: Mapping[str, str]
+    stl_visuals: Mapping[str, str]
+    stl_materials: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class FTSensor:
+    name: str
+    source: str
+    base_link: str
+    output_link: str
     mount_joint: str
     flange: str
     robots: tuple[str, ...]
@@ -150,6 +168,7 @@ class _VisualParts(Protocol):
 class _Catalog:
     end_effectors: dict[str, EndEffector]
     adapters: dict[str, Adapter]
+    ft_sensors: dict[str, FTSensor]
     spacers: dict[str, Spacer]
     cameras: dict[str, Camera]
     mounting_plates: dict[str, MountingPlate]
@@ -161,6 +180,7 @@ class AssemblyRef:
     visual: str = "glb"
     accessory: str | None = None
     mounting_plate: bool = False
+    ft_sensor: str | None = None
 
     def __str__(self) -> str:
         return assembly_ref(
@@ -168,6 +188,7 @@ class AssemblyRef:
             visual=self.visual,
             accessory=self.accessory,
             mounting_plate=self.mounting_plate,
+            ft_sensor=self.ft_sensor,
         )
 
 
@@ -205,7 +226,7 @@ def _str_map(value: Any) -> dict[str, str]:
 @lru_cache(maxsize=8)
 def _load_catalog(path: Path, mtime_ns: int) -> _Catalog:
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or data.get("schema_version") not in (3, 4, 5):
+    if not isinstance(data, dict) or data.get("schema_version") not in (3, 4, 5, 6):
         raise AssemblyError(f"{path}: unsupported assembly schema")
     flanges = _load_flanges(data, path)
 
@@ -245,6 +266,33 @@ def _load_catalog(path: Path, mtime_ns: int) -> _Catalog:
             flange=flange,
             robots=flanges[flange],
             mount=_pose(spec, adapter_name),
+            tool_lift_m=lift_m,
+            glb_visuals=_str_map(spec.get("glb_visuals")),
+            stl_visuals=_str_map(spec.get("stl_visuals")),
+            stl_materials=_str_map(spec.get("stl_materials")),
+        )
+
+    ft_sensor_map: dict[str, FTSensor] = {}
+    for name, spec in (data.get("ft_sensors") or {}).items():
+        sensor_name = str(name)
+        if not sensor_name.startswith(FT_SENSOR_PREFIX):
+            raise AssemblyError(f"{sensor_name}: ft_sensors entry name must start with {FT_SENSOR_PREFIX!r}")
+        flange = flange_of(sensor_name, spec)
+        lift_m = float(spec.get("tool_lift_m", 0.0))
+        if lift_m < 0.0:
+            raise AssemblyError(f"{sensor_name}: tool_lift_m must be non-negative")
+        output_link = str(spec.get("output_link", "")).strip()
+        if not output_link:
+            raise AssemblyError(f"{sensor_name}: output_link is required")
+        ft_sensor_map[sensor_name] = FTSensor(
+            name=sensor_name,
+            source=str(spec["source"]),
+            base_link=str(spec["base_link"]),
+            output_link=output_link,
+            mount_joint=str(spec["mount_joint"]),
+            flange=flange,
+            robots=flanges[flange],
+            mount=_pose(spec, sensor_name),
             tool_lift_m=lift_m,
             glb_visuals=_str_map(spec.get("glb_visuals")),
             stl_visuals=_str_map(spec.get("stl_visuals")),
@@ -345,7 +393,7 @@ def _load_catalog(path: Path, mtime_ns: int) -> _Catalog:
             stl_visuals=_str_map(spec.get("stl_visuals")),
             stl_materials=_str_map(spec.get("stl_materials")),
         )
-    sections = (set(out), set(adapter_map), set(spacers), set(cameras), set(plates))
+    sections = (set(out), set(adapter_map), set(ft_sensor_map), set(spacers), set(cameras), set(plates))
     seen: set[str] = set()
     clash: set[str] = set()
     for sec in sections:
@@ -356,7 +404,7 @@ def _load_catalog(path: Path, mtime_ns: int) -> _Catalog:
         raise AssemblyError(
             f"{path}: part names must be unique across sections and not {BARE!r}/{MOUNTING_PLATE!r}: {sorted(clash)}"
         )
-    return _Catalog(out, adapter_map, spacers, cameras, plates)
+    return _Catalog(out, adapter_map, ft_sensor_map, spacers, cameras, plates)
 
 
 def _catalog(root: Path | None = None) -> _Catalog:
@@ -380,6 +428,30 @@ def get_adapter(name: str, root: Path | None = None) -> Adapter:
     if name not in parts:
         raise AssemblyError(f"unknown adapter {name!r}; expected one of {sorted(parts)}")
     return parts[name]
+
+
+def ft_sensors(root: Path | None = None) -> dict[str, FTSensor]:
+    """Six-axis force/torque sensors declared in ``assets/urdf/assembly.yaml``."""
+    return _catalog(root).ft_sensors
+
+
+def get_ft_sensor(name: str, root: Path | None = None) -> FTSensor:
+    """Return a declared six-axis force/torque sensor by name."""
+    parts = ft_sensors(root)
+    if name not in parts:
+        raise AssemblyError(f"unknown F/T sensor {name!r}; expected one of {sorted(parts)}")
+    return parts[name]
+
+
+def supported_ft_sensors(robot_key: str, root: Path | None = None) -> tuple[str, ...]:
+    """F/T sensors compatible with ``robot_key``."""
+    key = get_profile_key_for_robot_name(robot_key)
+    return tuple(name for name, sensor in ft_sensors(root).items() if key in sensor.robots)
+
+
+def supports_ft_sensor(robot_key: str, ft_sensor: str, root: Path | None = None) -> bool:
+    """Whether ``ft_sensor`` fits ``robot_key``."""
+    return ft_sensor in supported_ft_sensors(robot_key, root)
 
 
 def spacers(root: Path | None = None) -> dict[str, Spacer]:
@@ -472,11 +544,14 @@ def assembly_ref(
     visual: str = "glb",
     accessory: str | None = None,
     mounting_plate: bool = False,
+    ft_sensor: str | None = None,
 ) -> str:
     """Canonical reference string, omitting default fields."""
-    if end_effector is None and accessory is None and not mounting_plate:
-        raise AssemblyError("an assembly needs an end effector or an accessory, or a mounting plate")
+    if end_effector is None and ft_sensor is None and accessory is None and not mounting_plate:
+        raise AssemblyError("an assembly needs an end effector or an accessory, an F/T sensor, or a mounting plate")
     tokens = [end_effector or BARE]
+    if ft_sensor:
+        tokens.append(ft_sensor)
     if accessory:
         tokens.append(accessory)
     if mounting_plate:
@@ -488,7 +563,7 @@ def assembly_ref(
 
 
 def parse_assembly_ref(value: str) -> AssemblyRef | None:
-    """Parse ``assembly:<end_effector|bare>[+<accessory>][+mounting_plate][:<visual>]``; ``None`` for a file name."""
+    """Parse ``assembly:<end_effector|bare>[+<ft_sensor>][+<accessory>][+mounting_plate][:<visual>]``; ``None`` for a file name."""
     if not value.startswith(ASSEMBLY_PREFIX):
         return None
     fields = value[len(ASSEMBLY_PREFIX) :].split(":")
@@ -498,19 +573,21 @@ def parse_assembly_ref(value: str) -> AssemblyRef | None:
     if any(not tok for tok in tokens):
         raise AssemblyError(f"malformed assembly reference {value!r}")
     head, *extras = tokens
-    if head == MOUNTING_PLATE or extras.count(MOUNTING_PLATE) > 1:
+    if head == MOUNTING_PLATE or head.startswith(FT_SENSOR_PREFIX) or extras.count(MOUNTING_PLATE) > 1:
         raise AssemblyError(f"malformed assembly reference {value!r}")
     has_mounting_plate = MOUNTING_PLATE in extras
-    acc_tokens = [tok for tok in extras if tok != MOUNTING_PLATE]
-    if len(acc_tokens) > 1:
+    ft_tokens = [tok for tok in extras if tok.startswith(FT_SENSOR_PREFIX)]
+    acc_tokens = [tok for tok in extras if tok != MOUNTING_PLATE and not tok.startswith(FT_SENSOR_PREFIX)]
+    if len(ft_tokens) > 1 or len(acc_tokens) > 1:
         raise AssemblyError(f"malformed assembly reference {value!r}")
+    ft_sensor = ft_tokens[0] if ft_tokens else None
     accessory = acc_tokens[0] if acc_tokens else None
-    if head == BARE and accessory is None and not has_mounting_plate:
+    if head == BARE and ft_sensor is None and accessory is None and not has_mounting_plate:
         raise AssemblyError(f"malformed assembly reference {value!r}")
     visual = fields[1] if len(fields) > 1 else "glb"
     if visual not in VISUALS:
         raise AssemblyError(f"{value!r}: visual must be one of {VISUALS}")
-    return AssemblyRef(None if head == BARE else head, visual, accessory, has_mounting_plate)
+    return AssemblyRef(None if head == BARE else head, visual, accessory, has_mounting_plate, ft_sensor)
 
 
 def validate_assembly(
@@ -520,6 +597,7 @@ def validate_assembly(
     visual: str = "glb",
     accessory: str | None = None,
     mounting_plate: bool = False,
+    ft_sensor: str | None = None,
     root: Path | None = None,
 ) -> EndEffector | None:
     """Check that the assembly can be composed, without writing anything."""
@@ -527,13 +605,18 @@ def validate_assembly(
     key = get_profile_key_for_robot_name(robot_key)
     if visual not in VISUALS:
         raise AssemblyError(f"visual must be one of {VISUALS}")
-    if end_effector is None and accessory is None and not mounting_plate:
-        raise AssemblyError("an assembly needs an end effector or an accessory, or a mounting plate")
+    if end_effector is None and ft_sensor is None and accessory is None and not mounting_plate:
+        raise AssemblyError("an assembly needs an end effector or an accessory, an F/T sensor, or a mounting plate")
     urdf_root = root / "assets" / "urdf"
     sources = [_arm_source(key, visual, root)]
     if mounting_plate:
         plate = mounting_plate_for(key, root)
         sources.append(urdf_root / plate.source)
+    if ft_sensor is not None:
+        ft = get_ft_sensor(ft_sensor, root)
+        if key not in ft.robots:
+            raise AssemblyError(f"{ft_sensor} is not supported on {key}; supported robots: {list(ft.robots)}")
+        sources.append(urdf_root / ft.source)
     ee = None
     if end_effector is not None:
         ee = get_end_effector(end_effector, root)
@@ -563,7 +646,7 @@ def validate_assembly(
 def _arm_source(robot_key: str, visual: str, root: Path) -> Path:
     profile = ROBOT_PROFILES[robot_key]
     name = str(profile.visual_glb_urdf if visual == "glb" else profile.default_urdf)
-    return root / "assets" / "urdf" / str(profile.assets_dir.name) / name
+    return root / "assets" / "urdf" / "robots" / str(profile.assets_dir.name) / name
 
 
 def _fmt(values: tuple[float, float, float]) -> str:
@@ -585,7 +668,7 @@ def _link_ref(joint: ET.Element, tag: str) -> str | None:
 
 
 def _tool_elements(
-    ee: EndEffector | Adapter | Spacer | Camera | MountingPlate, source: Path
+    ee: EndEffector | Adapter | FTSensor | Spacer | Camera | MountingPlate, source: Path
 ) -> tuple[list[ET.Element], dict[str, ET.Element]]:
     root = ET.parse(source).getroot()
     attach = [j for j in root.findall("joint") if _link_ref(j, "child") == ee.base_link]
@@ -653,7 +736,7 @@ def _fixed_joint(robot: ET.Element, name: str, parent: str, child: str, origin: 
 
 def _attach_part(
     robot: ET.Element,
-    part: Adapter | Spacer | Camera | MountingPlate,
+    part: Adapter | FTSensor | Spacer | Camera | MountingPlate,
     parent: str,
     visual: str,
     urdf_root: Path,
@@ -661,7 +744,7 @@ def _attach_part(
     *,
     z_offset: float = 0.0,
 ) -> None:
-    """Append an adapter, spacer, camera, or mounting-plate part, fixed to ``parent`` at its mount pose."""
+    """Append an adapter, F/T sensor, spacer, camera, or mounting-plate part, fixed to ``parent`` at its mount pose."""
     source = urdf_root / part.source
     elems, materials = _tool_elements(part, source)
     _apply_visual_mode(elems, part, visual, urdf_root)
@@ -687,9 +770,21 @@ def _lift_link_eef(robot: ET.Element, lift_m: float) -> None:
         origin.set("xyz", _fmt((x, y, z + lift_m)))
 
 
-def _assembly_label(end_effector: str | None, accessory: str | None, mounting_plate: bool = False) -> str:
-    label = f"{end_effector or BARE}__{accessory}" if accessory else (end_effector or BARE)
-    return f"{label}__{MOUNTING_PLATE}" if mounting_plate else label
+def _assembly_label(
+    end_effector: str | None,
+    accessory: str | None,
+    mounting_plate: bool = False,
+    ft_sensor: str | None = None,
+) -> str:
+    if ft_sensor is None:
+        label = f"{end_effector or BARE}__{accessory}" if accessory else (end_effector or BARE)
+        return f"{label}__{MOUNTING_PLATE}" if mounting_plate else label
+    parts = [end_effector or BARE, ft_sensor]
+    if accessory:
+        parts.append(accessory)
+    if mounting_plate:
+        parts.append(MOUNTING_PLATE)
+    return "__".join(parts)
 
 
 def build_assembly_tree(
@@ -699,6 +794,7 @@ def build_assembly_tree(
     visual: str = "glb",
     accessory: str | None = None,
     mounting_plate: bool = False,
+    ft_sensor: str | None = None,
     root: Path | None = None,
     out_dir: Path | None = None,
 ) -> ET.Element:
@@ -712,18 +808,22 @@ def build_assembly_tree(
         visual=visual,
         accessory=accessory,
         mounting_plate=mounting_plate,
+        ft_sensor=ft_sensor,
         root=root,
     )
     urdf_root = root / "assets" / "urdf"
     arm_file = _arm_source(key, visual, root)
     flange = get_robot_profile(key).ee_link
     plate = mounting_plate_for(key, root) if mounting_plate else None
+    ft = get_ft_sensor(ft_sensor, root) if ft_sensor is not None else None
     spacer, camera = resolve_accessory(accessory, root) if accessory is not None else (None, None)
     adapter = get_adapter(ee.adapter, root) if ee is not None and ee.adapter is not None else None
 
     sources = [arm_file]
     if plate is not None:
         sources.append(urdf_root / plate.source)
+    if ft is not None:
+        sources.append(urdf_root / ft.source)
     if spacer is not None:
         sources.append(urdf_root / spacer.source)
     if camera is not None:
@@ -732,7 +832,7 @@ def build_assembly_tree(
         sources.append(urdf_root / adapter.source)
     if ee is not None:
         sources.append(urdf_root / ee.source)
-    label = _assembly_label(end_effector, accessory, mounting_plate)
+    label = _assembly_label(end_effector, accessory, mounting_plate, ft_sensor)
     robot = ET.Element("robot", {"name": f"{key}__{label}__{visual}"})
     robot.append(
         ET.Comment(
@@ -748,16 +848,27 @@ def build_assembly_tree(
     if plate is not None:
         _attach_part(robot, plate, "link_base", visual, urdf_root, out_dir)
 
-    lift = 0.0
+    tool_parent = flange
+    local_lift = 0.0
+    total_lift = 0.0
+    if ft is not None:
+        _attach_part(robot, ft, flange, visual, urdf_root, out_dir)
+        if robot.find(f"./link[@name='{ft.output_link}']") is None:
+            raise AssemblyError(f"{ft.name}: output_link {ft.output_link!r} missing from {ft.source}")
+        tool_parent = ft.output_link
+        total_lift += ft.tool_lift_m
+
     if spacer is not None:
-        _attach_part(robot, spacer, flange, visual, urdf_root, out_dir)
-        lift = spacer.tool_lift_m
+        _attach_part(robot, spacer, tool_parent, visual, urdf_root, out_dir, z_offset=local_lift)
+        local_lift += spacer.tool_lift_m
+        total_lift += spacer.tool_lift_m
         if camera is not None:
             _attach_part(robot, camera, spacer.base_link, visual, urdf_root, out_dir)
 
     if adapter is not None:
-        _attach_part(robot, adapter, flange, visual, urdf_root, out_dir, z_offset=lift)
-        lift += adapter.tool_lift_m
+        _attach_part(robot, adapter, tool_parent, visual, urdf_root, out_dir, z_offset=local_lift)
+        local_lift += adapter.tool_lift_m
+        total_lift += adapter.tool_lift_m
 
     if ee is not None:
         tool_file = urdf_root / ee.source
@@ -768,13 +879,13 @@ def build_assembly_tree(
         _merge_part_materials(robot, elems, tool_materials)
 
         xyz, rpy = ee.mount
-        if lift:
-            xyz = (xyz[0], xyz[1], xyz[2] + lift)
+        if local_lift:
+            xyz = (xyz[0], xyz[1], xyz[2] + local_lift)
         origin = {"xyz": _fmt(xyz), "rpy": _fmt(rpy)}
-        _fixed_joint(robot, ee.mount_joint, flange, ee.base_link, origin)
+        _fixed_joint(robot, ee.mount_joint, tool_parent, ee.base_link, origin)
         robot.extend(elems)
-    elif lift:
-        _lift_link_eef(robot, lift)
+    elif total_lift:
+        _lift_link_eef(robot, total_lift)
 
     names = [e.get("name") for e in robot if e.tag in ("link", "joint")]
     duplicates = sorted({n for n in names if names.count(n) > 1 and n is not None})
@@ -803,7 +914,7 @@ def _write_composed_urdf(out_dir: Path, stem: str, tree: ET.Element) -> str:
 
 
 def _build_standalone_part_tree(
-    part: EndEffector | Adapter | MountingPlate,
+    part: EndEffector | Adapter | FTSensor | MountingPlate,
     *,
     mount_pose: Pose,
     visual: str = "glb",
@@ -918,6 +1029,45 @@ def compose_standalone_adapter_urdf(
     return _write_composed_urdf(resolved_out, f"standalone__{adapter.name}__{visual}", tree)
 
 
+def build_standalone_ft_sensor_tree(
+    name: str,
+    *,
+    visual: str = "glb",
+    root: Path | None = None,
+    out_dir: Path | None = None,
+) -> ET.Element:
+    """Return a standalone ``<robot>`` element (rooted at ``world``) for one F/T sensor."""
+    resolved_root = (root or PROJECT_ROOT).resolve()
+    sensor = get_ft_sensor(name, resolved_root)
+    return _build_standalone_part_tree(
+        sensor,
+        mount_pose=sensor.mount,
+        visual=visual,
+        root=resolved_root,
+        out_dir=out_dir,
+    )
+
+
+def compose_standalone_ft_sensor_urdf(
+    name: str,
+    *,
+    visual: str = "glb",
+    root: Path | None = None,
+    out_dir: Path | None = None,
+) -> str:
+    """Compose (or reuse) a standalone F/T sensor URDF with visuals resolved from ``assembly.yaml``."""
+    resolved_root = (root or PROJECT_ROOT).resolve()
+    resolved_out = (out_dir or resolved_root / COMPOSED_DIR).resolve()
+    tree = build_standalone_ft_sensor_tree(
+        name,
+        visual=visual,
+        root=resolved_root,
+        out_dir=resolved_out,
+    )
+    sensor = get_ft_sensor(name, resolved_root)
+    return _write_composed_urdf(resolved_out, f"standalone__{sensor.name}__{visual}", tree)
+
+
 def build_standalone_mounting_plate_tree(
     name: str,
     *,
@@ -964,12 +1114,13 @@ def compose_robot_urdf(
     visual: str = "glb",
     accessory: str | None = None,
     mounting_plate: bool = False,
+    ft_sensor: str | None = None,
     root: Path | None = None,
     out_dir: Path | None = None,
 ) -> str:
     """Compose (or reuse) the assembled URDF and return its absolute path.
 
-    ``end_effector`` may be ``None`` (bare arm) when ``accessory`` or ``mounting_plate=True`` is given.
+    ``end_effector`` may be ``None`` (bare arm) when ``ft_sensor``, ``accessory``, or ``mounting_plate=True`` is given.
     """
     root = (root or PROJECT_ROOT).resolve()
     out_dir = (out_dir or root / COMPOSED_DIR).resolve()
@@ -980,12 +1131,13 @@ def compose_robot_urdf(
         visual=visual,
         accessory=accessory,
         mounting_plate=mounting_plate,
+        ft_sensor=ft_sensor,
         root=root,
         out_dir=out_dir,
     )
     return _write_composed_urdf(
         out_dir,
-        f"{key}__{_assembly_label(end_effector, accessory, mounting_plate)}__{visual}",
+        f"{key}__{_assembly_label(end_effector, accessory, mounting_plate, ft_sensor)}__{visual}",
         tree,
     )
 
@@ -1008,6 +1160,7 @@ def resolve_robot_urdf(
                 visual=ref.visual,
                 accessory=ref.accessory,
                 mounting_plate=ref.mounting_plate,
+                ft_sensor=ref.ft_sensor,
                 root=root,
             )
         )
@@ -1038,5 +1191,6 @@ def validate_robot_urdf(
         visual=ref.visual,
         accessory=ref.accessory,
         mounting_plate=ref.mounting_plate,
+        ft_sensor=ref.ft_sensor,
         root=store.root,
     )

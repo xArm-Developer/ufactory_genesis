@@ -11,6 +11,7 @@ from ufactory.safety.models import SafetyPolicy
 
 
 FloatTuple = tuple[float, ...]
+TcpOffsetTuple = tuple[float, float, float, float, float, float]
 G2_PHYSICS_PROFILE = "g2_calibrated_v1"
 ROBOTIQ_2F_85_PHYSICS_PROFILE = "robotiq_2f_85_calibrated_v1"
 ROBOTIQ_2F_140_PHYSICS_PROFILE = "robotiq_2f_140_calibrated_v1"
@@ -111,10 +112,24 @@ class GripperProfile:
     grasp_height_extra_m: float
     # URDF collision geometries (``<link>_<collision index>``) whose mutual contact Genesis physics ignores.
     excluded_geometry_pairs: tuple[tuple[str, str], ...] = ()
+    # Flange-to-TCP 6D offset [x_mm, y_mm, z_mm, roll_deg, pitch_deg, yaw_deg]
+    # matching xarm-python-sdk default (is_radian=False) and UFACTORY Studio.
+    tcp_offset: TcpOffsetTuple = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    @property
+    def has_actuated_joints(self) -> bool:
+        return bool(self.drive_joint and self.all_joint_names)
 
     def __post_init__(self) -> None:
-        if not self.adapter or not self.drive_joint:
+        if not self.adapter:
+            raise ValueError("gripper adapter is required")
+        is_zero_dof = not self.drive_joint and not self.all_joint_names
+        if not is_zero_dof and not self.drive_joint:
             raise ValueError("gripper adapter and drive joint are required")
+        tcp = tuple(float(value) for value in self.tcp_offset)
+        if len(tcp) != 6 or not all(math.isfinite(value) for value in tcp):
+            raise ValueError("gripper tcp_offset must contain 6 finite values [x_mm, y_mm, z_mm, r_deg, p_deg, y_deg]")
+        object.__setattr__(self, "tcp_offset", (tcp[0], tcp[1], tcp[2], tcp[3], tcp[4], tcp[5]))
         pairs = self.excluded_geometry_pairs
         if any(
             len(pair) != 2 or any(not isinstance(name, str) or not name.strip() for name in pair) or pair[0] == pair[1]
@@ -124,14 +139,22 @@ class GripperProfile:
         if len({frozenset(pair) for pair in pairs}) != len(pairs):
             raise ValueError("excluded_geometry_pairs cannot contain duplicate pairs")
         object.__setattr__(self, "excluded_geometry_pairs", tuple(tuple(pair) for pair in pairs))
-        if self.open_gap_m <= self.closed_gap_m:
-            raise ValueError("gripper open_gap_m must be greater than closed_gap_m")
         if not self.closed_gap_m >= 0.0:
             raise ValueError("gripper gaps cannot be negative")
-        if self.force_lower_n >= self.force_upper_n:
-            raise ValueError("gripper force_lower_n must be below force_upper_n")
-        if self.tool_tip_offset_z_m <= 0.0:
-            raise ValueError("gripper tool_tip_offset_z_m must be positive")
+        if is_zero_dof:
+            if self.open_gap_m < self.closed_gap_m:
+                raise ValueError("gripper open_gap_m cannot be below closed_gap_m")
+            if self.force_lower_n > self.force_upper_n:
+                raise ValueError("gripper force_lower_n cannot exceed force_upper_n")
+            if not math.isfinite(float(self.tool_tip_offset_z_m)) or self.tool_tip_offset_z_m < 0.0:
+                raise ValueError("gripper tool_tip_offset_z_m must be finite and non-negative")
+        else:
+            if self.open_gap_m <= self.closed_gap_m:
+                raise ValueError("gripper open_gap_m must be greater than closed_gap_m")
+            if self.force_lower_n >= self.force_upper_n:
+                raise ValueError("gripper force_lower_n must be below force_upper_n")
+            if self.tool_tip_offset_z_m <= 0.0:
+                raise ValueError("gripper tool_tip_offset_z_m must be positive")
         for name in (
             "finger_pad_below_center_m",
             "finger_close_descent_m",
@@ -214,6 +237,11 @@ class MotionConfig:
     cartesian_speed_m_s: float
     cartesian_acceleration_m_s2: float
     gripper_duration_s: float
+    allow_approx_motion: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.allow_approx_motion, bool):
+            raise ValueError("motion.allow_approx_motion must be a boolean")
 
 
 @dataclass(frozen=True)
@@ -294,12 +322,15 @@ class SimulationConfig:
     show_viewer: bool
     g2: G2SimulationConfig = G2SimulationConfig()
     robotiq: RobotiqSimulationConfig = RobotiqSimulationConfig()
+    rate_hz: float = 50.0
 
     def __post_init__(self) -> None:
         if self.backend not in {"cpu", "gpu"}:
             raise ValueError("simulation backend must be cpu or gpu")
         if self.precision not in {"32", "64"}:
             raise ValueError("simulation precision must be 32 or 64")
+        if isinstance(self.rate_hz, bool) or not math.isfinite(float(self.rate_hz)) or float(self.rate_hz) <= 0.0:
+            raise ValueError("simulation rate_hz must be finite and positive")
         if self.substeps < 1 or self.solver_iterations < 1 or self.noslip_iterations < 0:
             raise ValueError("simulation iteration counts are invalid")
         if self.constraint_time_constant_s <= 0.0:

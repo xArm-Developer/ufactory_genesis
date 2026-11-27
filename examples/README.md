@@ -71,26 +71,28 @@ See the [RL index](rl/README.md) for the learning sequence and training/inferenc
 | `uf850` | Gripper G2, Bio Gripper G2, Robotiq 2F-85, Robotiq 2F-140, Vacuum Gripper | Bare arm, Gripper G2, Robotiq 2F-85, Robotiq 2F-140, Vacuum Gripper (not Bio Gripper G2) | Yes | — |
 | `lite6` | Lite6 Gripper, Lite6 Vacuum Gripper | Bare arm, Lite6 Gripper, Lite6 Vacuum Gripper | Yes | Lite6 Gripper |
 
-All robots accept the [camera stand](../assets/urdf/camera_stand/README.md) (alone or with one depth camera looking along the tool axis), which moves the end effector and its TCP 3 mm along the tool axis:
+All robots accept the [camera stand](../assets/urdf/mounts/camera_stand/README.md) (alone or with one depth camera looking along the tool axis), which moves the end effector and its TCP 3 mm along the tool axis:
 
 | Accessory key | Name | Notes |
 |---|---|---|
-| `camera_stand` | [Camera Stand](../assets/urdf/camera_stand/README.md) | 3 mm aluminium stand (48 g) |
-| `d405` | [Intel RealSense D405](../assets/urdf/d405/README.md) | Stand + D405 short-range stereo depth camera (58 g) |
-| `d435` | [Intel RealSense D435](../assets/urdf/d435/README.md) | Stand + D435 stereo depth camera (75 g) |
-| `gemini_305` | [Orbbec Gemini 305](../assets/urdf/gemini_305/README.md) | Stand + Gemini 305 stereo depth camera (68 g) |
-| `zed_x_nano` | [Stereolabs ZED X Nano](../assets/urdf/zed_x_nano/README.md) | Stand + ZED X Nano stereo camera (75 g) |
+| `camera_stand` | [Camera Stand](../assets/urdf/mounts/camera_stand/README.md) | 3 mm aluminium stand (48 g) |
+| `d405` | [Intel RealSense D405](../assets/urdf/cameras/d405/README.md) | Stand + D405 short-range stereo depth camera (58 g) |
+| `d435` | [Intel RealSense D435](../assets/urdf/cameras/d435/README.md) | Stand + D435 stereo depth camera (75 g) |
+| `gemini_305` | [Orbbec Gemini 305](../assets/urdf/cameras/gemini_305/README.md) | Stand + Gemini 305 stereo depth camera (68 g) |
+| `zed_x_nano` | [Stereolabs ZED X Nano](../assets/urdf/cameras/zed_x_nano/README.md) | Stand + ZED X Nano stereo camera (75 g) |
 
-- Configuration URDF references: `assembly:gripper_g2+d435`, `assembly:lite6_gripper+d435`, `assembly:bare+camera_stand`, `assembly:bare+mounting_plate`, or `assembly:gripper_g2+d435+mounting_plate`.
+- Configuration URDF references: `assembly:gripper_g2+d435`, `assembly:gripper_g2+ft_sensor_ai1500+d435`, `assembly:lite6_gripper+d435`, `assembly:bare+ft_sensor_ai1500`, `assembly:bare+camera_stand`, `assembly:bare+mounting_plate`, or `assembly:gripper_g2+d435+mounting_plate`.
 - Real packaging details: [Hardware & Real Robot](#hardware--real-robot). G2 simulations use `g2_calibrated_v1`; see the [pick-place RL guide](rl/pick_place/README.md) for training and the current v3 checkpoint contract.
+
+`xarm5`, `xarm6`, `xarm7`, and `uf850` also accept the [AI1500 six-axis force/torque sensor](../assets/urdf/accessories/ft_sensor_ai1500/README.md) directly on the tool flange (`+58.6 mm` along flange `+Z`, `0.6 kg`), below any camera stand, adapter, or end effector.
 
 All robots also accept their official aluminium mounting plate (mounted below `link_base`, top face at `z = 0`, keeping kinematics unchanged):
 
 | Mounting plate | Robots | Envelope (mm) | Standalone `--tool` |
 |---|---|---|---|
-| [xArm Mounting Plate](../assets/urdf/xarm_mounting_plate/README.md) | `xarm5`, `xarm6`, `xarm7` | `136 × 185 × 8` | `xarm_mounting_plate` |
-| [UF850 Mounting Plate](../assets/urdf/uf850_mounting_plate/README.md) | `uf850` | `190 × 260 × 10` | `uf850_mounting_plate` |
-| [Lite 6 Mounting Plate](../assets/urdf/lite6_mounting_plate/README.md) | `lite6` | `130 × 190 × 5` | `lite6_mounting_plate` |
+| [xArm Mounting Plate](../assets/urdf/mounts/xarm_mounting_plate/README.md) | `xarm5`, `xarm6`, `xarm7` | `136 × 185 × 8` | `xarm_mounting_plate` |
+| [UF850 Mounting Plate](../assets/urdf/mounts/uf850_mounting_plate/README.md) | `uf850` | `190 × 260 × 10` | `uf850_mounting_plate` |
+| [Lite 6 Mounting Plate](../assets/urdf/mounts/lite6_mounting_plate/README.md) | `lite6` | `130 × 190 × 5` | `lite6_mounting_plate` |
 
 ## Visualization
 
@@ -135,11 +137,15 @@ python examples/visualization/view_robot.py --robot lite6 --lite6-vacuum-gripper
 # xArm6 + Gripper G2 + D435 + mounting plate
 python examples/visualization/view_robot.py --robot xarm6 --gripper-g2 --camera d435 --mounting-plate
 
-# Standalone tool, adapter, and mounting-plate preview
+# xArm6 + AI1500 F/T sensor + D435 + Gripper G2
+python examples/visualization/view_robot.py --robot xarm6 --ft-sensor --gripper-g2 --camera d435 --gripper-demo
+
+# Standalone tool, adapter, F/T sensor, and mounting-plate preview
 python examples/visualization/view_tool.py --tool gripper_g2
 python examples/visualization/view_tool.py --tool robotiq_2f_85
 python examples/visualization/view_tool.py --tool robotiq_2f_140
 python examples/visualization/view_tool.py --tool robotiq_mounting
+python examples/visualization/view_tool.py --tool ft_sensor_ai1500
 python examples/visualization/view_tool.py --tool bio_gripper_g2
 python examples/visualization/view_tool.py --tool lite6_gripper
 python examples/visualization/view_tool.py --tool vacuum_gripper
@@ -156,6 +162,7 @@ python examples/visualization/view_tool.py --tool lite6_mounting_plate
 | `--robot` | Required profile key |
 | `--gripper-g2` / `--bio-gripper-g2` / `--robotiq-2f-85` / `--robotiq-2f-140` / `--vacuum-gripper` / `--lite6-gripper` / `--lite6-vacuum-gripper` | End-effector combo (at most one) |
 | `--camera` | `camera_stand`, `d405`, `d435`, `gemini_305` or `zed_x_nano`: the camera stand, alone or with that camera (all robots; bare arm or any end effector except `--bio-gripper-g2`) |
+| `--ft-sensor` | Mount `ft_sensor_ai1500` on the tool flange (`xarm5`, `xarm6`, `xarm7`, `uf850`; optional value defaults to `ft_sensor_ai1500`) |
 | `--mounting-plate` | Mount the robot's official aluminium mounting plate below `link_base` |
 | `--movable` | Compatibility no-op (grippers always use per-link movable GLBs) |
 | `--gripper-demo` | Cycle open/close with a 0.5 s hold after reaching each endpoint (requires a gripper flag) |
@@ -165,7 +172,7 @@ python examples/visualization/view_tool.py --tool lite6_mounting_plate
 | `--headless` | No viewer window |
 | `--backend` | `cpu` / `gpu` (default `gpu`; use `cpu` without a supported GPU) |
 
-`view_tool.py` accepts `--tool {gripper_g2,robotiq_2f_85,robotiq_2f_140,robotiq_mounting,bio_gripper_g2,lite6_gripper,vacuum_gripper,lite6_vacuum_gripper,xarm_mounting_plate,uf850_mounting_plate,lite6_mounting_plate}`, `--headless`, `--backend`, and calibrated gripper tuning flags (`--position-mm`, `--speed-percent`, `--force-percent`, plus `--speed-mm-s` for `bio_gripper_g2`).
+`view_tool.py` accepts `--tool {gripper_g2,robotiq_2f_85,robotiq_2f_140,robotiq_mounting,ft_sensor_ai1500,bio_gripper_g2,lite6_gripper,vacuum_gripper,lite6_vacuum_gripper,xarm_mounting_plate,uf850_mounting_plate,lite6_mounting_plate}`, `--headless`, `--backend`, and calibrated gripper tuning flags (`--position-mm`, `--speed-percent`, `--force-percent`, plus `--speed-mm-s` for `bio_gripper_g2`).
 
 ## Kinematics & Dynamics Simulation
 
@@ -239,6 +246,14 @@ dynamics-sim-collision-check --robot xarm6 --ip <ip>
 python examples/simulation/packaging/run.py \
   --robot lite6 --mode sdk-sim --executor servo_cartesian \
   --ip <ip> --calibration path/to/exact.yaml
+
+# xArm6 + Bio Gripper G2: pick-place controller-internal simulation (sdk-sim, servo_j or servo_cartesian)
+python examples/simulation/pick_place/run.py \
+  --robot xarm6 --gripper bio_gripper_g2 --mode sdk-sim --executor servo_j \
+  --ip <ip> --calibration path/to/exact.yaml
+python examples/simulation/pick_place/run.py \
+  --robot xarm6 --gripper bio_gripper_g2 --mode sdk-sim --executor servo_cartesian \
+  --ip <ip> --calibration path/to/exact.yaml
 ```
 
 ### 2. Physical Motion Commands (Drives Robot & Gripper)
@@ -252,6 +267,14 @@ dynamics-hardware-check --robot xarm6 --ip <ip> --confirm-real
 # xArm6 + Gripper G2: real pick-place motion (requires per-unit calibration + --confirm-real)
 XARM_IP=<ip> python examples/simulation/pick_place/run.py \
   --robot xarm6 --mode real --executor servo_j \
+  --calibration path/to/exact.yaml --confirm-real
+
+# xArm6 + Bio Gripper G2: real empty pick-place motion (servo_j or servo_cartesian, optional --visual mirror; requires per-unit calibration + --confirm-real)
+XARM_IP=<ip> python examples/simulation/pick_place/run.py \
+  --robot xarm6 --gripper bio_gripper_g2 --mode real --executor servo_j --visual \
+  --calibration path/to/exact.yaml --confirm-real
+XARM_IP=<ip> python examples/simulation/pick_place/run.py \
+  --robot xarm6 --gripper bio_gripper_g2 --mode real --executor servo_cartesian \
   --calibration path/to/exact.yaml --confirm-real
 
 # Lite6 + Lite6 Gripper: real packaging motion (enabled for xArm6 + Gripper G2 and Lite6 + Lite6 Gripper; requires per-unit calibration + --confirm-real)

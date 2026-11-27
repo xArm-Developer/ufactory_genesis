@@ -24,8 +24,8 @@ outputs/
 *.safetensors
 *.onnx
 reports/
-assets/urdf/*/kinematics/user/*.yaml
-assets/urdf/*/*_calib.urdf
+assets/urdf/*/*/kinematics/user/*.yaml
+assets/urdf/*/*/*_calib.urdf
 assets/urdf/**/visual_glb_raw/
 assets/urdf/**/visual_glb_src/
 assets/urdf/**/relocalize_metrics.json

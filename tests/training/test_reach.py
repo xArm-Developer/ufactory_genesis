@@ -126,11 +126,11 @@ def test_reach_runtime_config_uses_the_bare_arm_and_target_box(
 @pytest.mark.parametrize(
     ("robot", "dof", "num_obs", "urdf_suffix"),
     (
-        ("xarm5", 5, 21, "assets/urdf/xarm5/xarm5_1305.urdf"),
-        ("xarm6", 6, 24, "assets/urdf/xarm6/xarm6_1305.urdf"),
-        ("xarm7", 7, 27, "assets/urdf/xarm7/xarm7_1305.urdf"),
-        ("uf850", 6, 24, "assets/urdf/uf850/uf850.urdf"),
-        ("lite6", 6, 24, "assets/urdf/lite6/lite6.urdf"),
+        ("xarm5", 5, 21, "assets/urdf/robots/xarm5/xarm5_1305.urdf"),
+        ("xarm6", 6, 24, "assets/urdf/robots/xarm6/xarm6_1305.urdf"),
+        ("xarm7", 7, 27, "assets/urdf/robots/xarm7/xarm7_1305.urdf"),
+        ("uf850", 6, 24, "assets/urdf/robots/uf850/uf850.urdf"),
+        ("lite6", 6, 24, "assets/urdf/robots/lite6/lite6.urdf"),
     ),
 )
 def test_reach_task_config_supports_all_robots_and_round_trips(

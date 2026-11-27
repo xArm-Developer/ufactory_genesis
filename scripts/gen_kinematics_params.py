@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""Extract per-robot kinematic calibration from xArm control box.
+"""Export per-unit kinematic calibration from an xArm controller.
 
-The output uses the strict calibration schema and is bound to the full
-robot serial number:
+The joint origins are identified from the controller's own forward kinematics
+(read-only ``get_forward_kinematics`` queries: the zero pose and single-joint
+sweeps, then 100 random configurations to verify the result). Nothing is
+enabled or moved. The file is written only if it reproduces the controller FK
+within the FK validation limits (1 mm, 0.5 deg).
+
+Output: the strict calibration schema, bound to the full robot serial number:
   joints.joint1..N: {x, y, z, roll, pitch, yaw}  (meters, radians)
 
 SN eligibility (no compensation file expected):
@@ -11,7 +16,7 @@ SN eligibility (no compensation file expected):
   - UF850: all units have compensation
 
 Usage:
-    python scripts/gen_kinematics_params.py <robot-ip> [suffix]
+    python scripts/gen_kinematics_params.py <robot-ip> [suffix] [output_dir]
     python scripts/gen_kinematics_params.py <robot-ip> [suffix] --force
 
 When suffix is omitted, defaults to the last 6 characters of the robot SN.
@@ -21,11 +26,12 @@ from __future__ import annotations
 
 import argparse
 import ipaddress
-import socket
-import struct
+import math
 import sys
+import time
 from pathlib import Path
 
+import numpy as np
 from yaml import dump
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -38,8 +44,15 @@ from ufactory.kinematics.calibration import (  # noqa: E402
     kinematics_suffix_from_sn,
     log_kinematics_sn_status,
     parse_sn_model_code,
-    robot_name_from_firmware,
 )
+from ufactory.kinematics.controller_fk import (  # noqa: E402
+    CalibrationIdentificationError,
+    controller_flange_fk,
+    identify_from_controller_fk,
+    load_nominal_chain,
+)
+from ufactory.kinematics.tcp_offset import read_tcp_offset  # noqa: E402
+from ufactory.robots.registry import get_robot_profile, joint_names, robot_name_for_controller  # noqa: E402
 
 
 def _parse_robot_ipv4(value: str) -> str:
@@ -57,20 +70,103 @@ def _parse_robot_ipv4(value: str) -> str:
 
 
 def _output_dir_for_robot(robot_name: str) -> Path:
-    return _REPO_ROOT / "assets" / "urdf" / robot_name / "kinematics" / "user"
+    return _REPO_ROOT / "assets" / "urdf" / "robots" / robot_name / "kinematics" / "user"
 
 
-def _fetch_kinematics_bytes(robot_ip: str) -> bytes:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.settimeout(10.0)
-        sock.connect((robot_ip, 502))
-        send_data = [0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x08]
-        sock.sendall(bytes(send_data))
-        return sock.recv(179)
+def _read_world_offset(arm, timeout_s: float = 2.0, poll_s: float = 0.05) -> np.ndarray:
+    """``arm.world_offset`` once the rich report has delivered it (all-zero until then)."""
+    deadline = time.monotonic() + timeout_s
+    offset = np.zeros(6)
+    while time.monotonic() < deadline:
+        offset = np.asarray(arm.world_offset, dtype=np.float64).reshape(-1)
+        if np.any(np.abs(offset) > 1e-6):
+            return offset
+        time.sleep(poll_s)
+    return offset
+
+
+def _export(arm, args: argparse.Namespace) -> int:
+    axis, device_type = int(arm.axis), int(arm.device_type)
+    robot_name = robot_name_for_controller(axis, device_type)
+    if robot_name is None:
+        print(f"[Failed] controller reports axis={axis}, device_type={device_type}: not a registered robot model")
+        return 1
+    profile = get_robot_profile(robot_name)
+    sn = get_robot_sn(arm)
+    if not sn:
+        print("[Failed] controller did not report a serial number")
+        return 1
+    if not args.kinematics_suffix:
+        args.kinematics_suffix = kinematics_suffix_from_sn(sn)
+        print(f"kinematics_suffix: {args.kinematics_suffix} (auto from SN {sn})")
+
+    print(f"robot_name     : {robot_name}")
+    log_kinematics_sn_status(
+        sn,
+        robot_name,
+        kinematics_suffix=args.kinematics_suffix,
+        allow_sn_override=args.force,
+    )
+    if not args.force and not has_per_unit_kinematics_calibration(sn, robot_name):
+        print(
+            "[Skipped] SN model code {} indicates no per-unit kinematics compensation. "
+            "Use nominal URDF without --kinematics-suffix. Pass --force to export anyway.".format(
+                parse_sn_model_code(sn)
+            )
+        )
+        return 2
+
+    tcp_offset = read_tcp_offset(arm)
+    world_offset = _read_world_offset(arm)
+    if np.any(np.abs(world_offset) > 1e-6):
+        print(
+            f"[Failed] controller world_offset {world_offset.tolist()} is not zero; the export reads FK in the "
+            "robot base frame. Set the world offset to 0 in UFACTORY Studio, export, then restore it."
+        )
+        return 1
+    print(f"tcp_offset     : {tcp_offset.tolist()} (removed from controller FK)")
+
+    chain = load_nominal_chain(profile.assets_dir / profile.default_urdf, joint_names(profile))
+    if chain.ee_link != profile.ee_link:
+        print(f"[Failed] URDF chain ends at {chain.ee_link}, expected {profile.ee_link}")
+        return 1
+    try:
+        result = identify_from_controller_fk(controller_flange_fk(arm, tcp_offset), chain)
+    except (CalibrationIdentificationError, RuntimeError) as exc:
+        print(f"[Failed] {exc}; no file written")
+        return 1
+    print(
+        f"controller FK  : rigid chain to {result.rigid_chain_error_m * 1e6:.2f} um "
+        f"({result.identification_samples} identification + {result.verification_samples} held-out samples)"
+    )
+    print(
+        f"calibration    : held-out error mean {result.mean_position_error_m * 1e3:.4f} mm, "
+        f"max {result.max_position_error_m * 1e3:.4f} mm / {math.degrees(result.max_rotation_error_rad):.4f} deg"
+    )
+    print(
+        f"flange         : {result.flange_axis_offset_m * 1e6:.1f} um off and "
+        f"{math.degrees(result.flange_axis_tilt_rad) * 1e3:.2f} mdeg tilted from the last axis "
+        "(exact at last joint 0)"
+    )
+
+    output_dir = Path(args.output_dir).resolve() if args.output_dir else _output_dir_for_robot(robot_name)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_file = output_dir / "{}_kinematics_{}.yaml".format(profile.kinematics_prefix, args.kinematics_suffix)
+    data = {
+        "schema_version": 1,
+        "robot_key": profile.key,
+        "serial_number": sn,
+        "units": {"position": "m", "angle": "rad"},
+        "joints": result.joints(chain.joint_names),
+    }
+    with open(output_file, "w", encoding="utf-8") as f:
+        dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    print("[Success] save to {}".format(output_file))
+    return 0
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Extract per-unit kinematics YAML from control box")
+    parser = argparse.ArgumentParser(description="Export per-unit kinematics YAML from the controller FK")
     parser.add_argument(
         "robot_ip",
         type=_parse_robot_ipv4,
@@ -94,95 +190,27 @@ def main() -> int:
 
     arm = None
     try:
-        arm = XArmAPI(args.robot_ip, is_radian=True)
+        try:
+            arm = XArmAPI(args.robot_ip, is_radian=True)
+        except Exception as exc:
+            print(
+                f"[Failed] cannot connect to {args.robot_ip}: {exc}. "
+                "Check the IP, controller power, and host network settings."
+            )
+            return 1
         if not arm.connected:
             print(
                 f"[Failed] cannot connect to {args.robot_ip}. "
                 "Check the IP, controller power, and host network settings."
             )
             return 1
-        sn = get_robot_sn(arm)
-    except Exception as exc:
-        print(
-            f"[Failed] cannot connect to {args.robot_ip}: {exc}. "
-            "Check the IP, controller power, and host network settings."
-        )
-        return 1
+        return _export(arm, args)
     finally:
         if arm is not None:
             try:
                 arm.disconnect()
             except Exception:
                 pass
-
-    if not args.kinematics_suffix:
-        args.kinematics_suffix = kinematics_suffix_from_sn(sn)
-        print(f"kinematics_suffix: {args.kinematics_suffix} (auto from SN {sn})")
-
-    try:
-        recv_data = _fetch_kinematics_bytes(args.robot_ip)
-    except OSError as exc:
-        print(
-            f"[Failed] cannot read kinematics data from {args.robot_ip}:502: {exc}. "
-            "Check that the controller is reachable and TCP port 502 is available."
-        )
-        return 1
-    if not (len(recv_data) == 179 and recv_data[8]):
-        valid = 0 if len(recv_data) < 9 else recv_data[8]
-        print("[Failed] recv_len={}, valid={}".format(len(recv_data), valid))
-        return 1
-
-    robot_dof = recv_data[9]
-    robot_type = recv_data[10]
-    robot_name = robot_name_from_firmware(robot_dof, robot_type)
-
-    print(f"robot_name     : {robot_name}")
-    log_kinematics_sn_status(
-        sn,
-        robot_name,
-        kinematics_suffix=args.kinematics_suffix,
-        allow_sn_override=args.force,
-    )
-
-    if not args.force and not has_per_unit_kinematics_calibration(sn, robot_name):
-        model_code = parse_sn_model_code(sn)
-        print(
-            "[Skipped] SN model code {} indicates no per-unit kinematics compensation. "
-            "Use nominal URDF without --kinematics-suffix. Pass --force to export anyway.".format(model_code)
-        )
-        return 2
-
-    output_dir = Path(args.output_dir).resolve() if args.output_dir else _output_dir_for_robot(robot_name)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_file = output_dir / "{}_kinematics_{}.yaml".format(robot_name, args.kinematics_suffix)
-
-    params = struct.unpack("<42f", recv_data[11:])
-    kinematics = {}
-    data = {
-        "schema_version": 1,
-        "robot_key": "{}_1305".format(robot_name) if robot_name.startswith("xarm") else robot_name,
-        "serial_number": sn,
-        "units": {"position": "m", "angle": "rad"},
-        "joints": kinematics,
-    }
-    for i in range(robot_dof):
-        joint_param = {}
-        kinematics["joint{}".format(i + 1)] = joint_param
-        for axis_idx, axis in enumerate(("x", "y", "z", "roll", "pitch", "yaw")):
-            value = float(params[i * 6 + axis_idx])
-            # xArm5 firmware may return mm-scale outliers on prismatic-like offsets.
-            if axis in ("x", "y", "z") and abs(value) > 1.0:
-                value /= 1000.0
-            joint_param[axis] = value
-
-    with open(output_file, "w", encoding="utf-8") as f:
-        try:
-            dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
-        except TypeError:
-            dump(data, f, default_flow_style=False, allow_unicode=True)
-
-    print("[Success] save to {}".format(output_file))
-    return 0
 
 
 if __name__ == "__main__":

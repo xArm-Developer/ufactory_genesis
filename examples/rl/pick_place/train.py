@@ -6,6 +6,7 @@ import argparse
 from copy import deepcopy
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,17 @@ def _install_fixed_learning_rate_guard(runner: Any, train_cfg: dict[str, Any]) -
 
     def guarded_update(*args: Any, **kwargs: Any) -> Any:
         result = original_update(*args, **kwargs)
+        if hasattr(runner.alg, "actor"):
+            dist = getattr(runner.alg.actor, "distribution", None)
+            with torch.no_grad():
+                if dist is not None and hasattr(dist, "std_param"):
+                    dist.std_param.clamp_(min=0.16, max=0.65)
+                elif dist is not None and hasattr(dist, "log_std_param"):
+                    dist.log_std_param.clamp_(min=math.log(0.16), max=math.log(0.65))
+                elif hasattr(runner.alg.actor, "std"):
+                    runner.alg.actor.std.clamp_(min=0.16, max=0.65)
+                elif hasattr(runner.alg.actor, "log_std"):
+                    runner.alg.actor.log_std.clamp_(min=math.log(0.16), max=math.log(0.65))
         actual_lr = float(runner.alg.learning_rate)
         group_lrs = [float(group["lr"]) for group in runner.alg.optimizer.param_groups]
         if not math.isclose(actual_lr, expected_lr, rel_tol=1e-9, abs_tol=1e-12) or any(
@@ -69,6 +81,22 @@ def _install_fixed_learning_rate_guard(runner: Any, train_cfg: dict[str, Any]) -
         return result
 
     runner.alg.update = guarded_update
+
+
+def _recent_training_stable(log_dir: Path, window: int = 15) -> bool:
+    metrics_path = log_dir / "training_metrics.jsonl"
+    if not metrics_path.is_file():
+        return True
+    rows = [json.loads(line) for line in metrics_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    valid = [r.get("episode", {}) for r in rows if int(r.get("completed_episodes", 0)) >= 32]
+    recent = valid[-window:] if valid else [r.get("episode", {}) for r in rows[-window:]]
+    if not recent:
+        return True
+    mean_sr = sum(float(ep.get("success_rate", 0.0)) for ep in recent) / len(recent)
+    mean_col_press = sum(
+        float(ep.get("collision_failed", 0.0)) + float(ep.get("press_failed", 0.0)) for ep in recent
+    ) / len(recent)
+    return mean_sr >= 0.88 and mean_col_press <= 0.035
 
 
 def _provenance_sources(repo_root: Path) -> list[Path]:
@@ -111,6 +139,7 @@ def main() -> None:
     parser.add_argument("--backend", choices=("gpu", "cpu"), default="gpu")
     parser.add_argument("--eval-episodes", type=int, default=64)
     parser.add_argument("--eval-interval", type=int, default=50)
+    parser.add_argument("--eval-start-iteration", type=int, default=0)
     parser.add_argument(
         "--early-stop-evaluations", type=int, help="Consecutive passing evaluations before stopping; 0 disables"
     )
@@ -128,8 +157,12 @@ def main() -> None:
     if args.early_stop_evaluations is not None and args.early_stop_evaluations < 0:
         parser.error("--early-stop-evaluations must be non-negative")
 
-    torch.set_num_threads(4)
+    num_threads = max(1, int(os.environ.get("OMP_NUM_THREADS", "4")))
+    torch.set_num_threads(num_threads)
     torch.set_float32_matmul_precision("high")
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
     recipe = load_training_recipe(args.recipe)
     early_stop_evaluations = int(
@@ -229,10 +262,11 @@ def main() -> None:
         if "ufactory_env_state" in infos:
             env.load_training_state_dict(infos["ufactory_env_state"])
 
-    best_score = (-1.0, -1.0, -1.0, float("-inf"), float("-inf"))
+    best_score = (-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, float("-inf"), float("-inf"))
+    passing_evaluations = 0
 
     def validate(tag: str) -> dict[str, Any]:
-        nonlocal best_score
+        nonlocal best_score, passing_evaluations
         actor = runner.get_inference_policy(device=gs.device)
 
         def _policy(obs: Any) -> torch.Tensor:
@@ -240,9 +274,49 @@ def main() -> None:
 
         summary, rows = evaluate(env, _policy, episodes=args.eval_episodes, seed=17000)
         summary["passed"] = acceptance_passed(summary)
+        holdout_passed = False
+        combined_sr = float(summary["success_rate"])
+        combined_press = float(summary["press_mm"]["max"])
+        if summary["passed"] and tag != "initial":
+            holdout_eps = max(128, int(args.eval_episodes) * 2)
+            holdout_summary, _ = evaluate(env, _policy, episodes=holdout_eps, seed=17500)
+            holdout_passed = acceptance_passed(holdout_summary)
+            total_eps = float(args.eval_episodes + holdout_eps)
+            combined_sr = (
+                float(summary["success_rate"]) * args.eval_episodes
+                + float(holdout_summary["success_rate"]) * holdout_eps
+            ) / total_eps
+            combined_press = max(combined_press, float(holdout_summary["press_mm"]["max"]))
+            summary["holdout_17500"] = {
+                "episodes": holdout_eps,
+                "success_rate": float(holdout_summary["success_rate"]),
+                "max_press_mm": float(holdout_summary["press_mm"]["max"]),
+                "passed": holdout_passed,
+            }
+        both_passed = bool(summary["passed"] and holdout_passed)
+        stable_pass = bool(
+            both_passed and combined_sr >= 0.994 and combined_press <= 0.8 and _recent_training_stable(log_dir)
+        )
+        summary["both_passed"] = both_passed
+        summary["stable_pass"] = stable_pass
+        summary["combined_sr"] = combined_sr
+        summary["combined_press_mm"] = combined_press
+        if tag != "initial":
+            passing_evaluations = passing_evaluations + 1 if stable_pass else 0
         save_results(log_dir / f"evaluation_{tag}.json", summary, rows)
         print(f"STRICT EVAL {tag}: {json.dumps(summary)}", flush=True)
-        score = checkpoint_score(summary)
+        streak_tier = min(passing_evaluations, early_stop_evaluations) if early_stop_evaluations else int(stable_pass)
+        base_cs = checkpoint_score(summary)
+        score = (
+            float(both_passed),
+            float(stable_pass),
+            float(streak_tier),
+            combined_sr,
+            base_cs[1],
+            base_cs[2],
+            -combined_press,
+            base_cs[4],
+        )
         if score > best_score:
             best_score = score
             runner.save(str(log_dir / "model_best.pt"), infos={"validation": summary, "stage": tag})
@@ -253,17 +327,17 @@ def main() -> None:
             runner.logger.cur_episode_length.zero_()
         return summary
 
-    validate("initial")
+    if args.eval_start_iteration <= 0:
+        validate("initial")
     remaining = max_iterations
     completed = 0
-    passing_evaluations = 0
     while remaining > 0:
         count = min(args.eval_interval, remaining)
         runner.learn(num_learning_iterations=count, init_at_random_ep_len=False)
         remaining -= count
         completed += count
-        summary = validate(f"ppo_{completed}")
-        passing_evaluations = passing_evaluations + 1 if summary["passed"] else 0
+        if completed >= args.eval_start_iteration or remaining == 0:
+            validate(f"ppo_{completed}")
         if early_stop_evaluations and passing_evaluations >= early_stop_evaluations:
             break
         if remaining > 0:
@@ -286,8 +360,8 @@ def main() -> None:
                 "max_iterations": max_iterations,
                 "early_stopped": remaining > 0,
                 "passing_evaluations": passing_evaluations,
-                "best_success_rate": best_score[0],
-                "best_press_mm": -best_score[3],
+                "best_success_rate": best_score[-5],
+                "best_press_mm": -best_score[-2],
                 "selected_checkpoint": selected.name,
             },
             indent=2,
@@ -297,7 +371,7 @@ def main() -> None:
         encoding="utf-8",
     )
     gs.destroy()
-    print(f"Completed {completed} iterations: best strict success_rate={best_score[0]:.3f}; {selected}", flush=True)
+    print(f"Completed {completed} iterations: best strict success_rate={best_score[-5]:.3f}; {selected}", flush=True)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,11 @@
 schema_version: 1
 motion:
+  # Mode 1 servo streaming rate (Hz); xArm SDK supports 30-250 Hz (default 50 Hz).
   rate_hz: 50.0
   joint_speed_rad_s: 1.0
   joint_acceleration_rad_s2: 12.0
   cartesian_speed_m_s: 0.15
   cartesian_acceleration_m_s2: 0.8
   gripper_duration_s: 2.0
+  # Firmware-aligned set_allow_approx_motion(bool) singularity avoidance (disabled by default).
+  allow_approx_motion: false

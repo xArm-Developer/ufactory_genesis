@@ -6,7 +6,8 @@
 
 | 脚本 | 模块 | 用途 |
 |------|------|------|
-| `gen_kinematics_params.py` | `ufactory.kinematics` | 从机器人控制柜提取逐台运动学 YAML（严格 v0.2.5 校准 schema） |
+| `gen_kinematics_params.py` | `ufactory.kinematics.controller_fk` | 从控制器 FK 辨识逐台运动学 YAML（严格 v0.2.5 校准 schema）；只读查询，用 100 组未参与辨识的位姿校验，超过 1 mm / 0.5° 不写文件 |
+| `ft_sensor_check.py` | `ufactory.hardware.ft_sensor` | 六维力矩传感器真机诊断与验证（`enable` / `disable` 开关采样，`status` 只读查配置/实时力，`zero` 静止置零，`identify-load` / `admittance-test` / `force-test` 需 `--confirm-real`） |
 
 真机 hold 电流/力矩时间序列观察由 `observe-hold-current` 控制台入口（`ufactory.hardware.observe:cli_observe_hold_current`）提供，安装后可直接调用。
 

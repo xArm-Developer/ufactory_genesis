@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 from dataclasses import asdict
 import os
 from pathlib import Path
@@ -40,10 +41,11 @@ from ufactory.manipulation.packaging.core import (
     packaging_layout,
     packaging_scene_sha256,
 )
+from ufactory.manipulation.tcp import check_controller_tcp_offset, resolve_tool_tcp_spec
 from ufactory.robots.registry import robot_cli_choices
 from ufactory.safety import validate_sdk_simulation
 from ufactory.safety.gate import program_sha256
-from ufactory.simulation import GenesisRuntimeManager, override_simulation_backend
+from ufactory.simulation import override_simulation_backend
 from ufactory.simulation.compat import require_genesis_capabilities
 from ufactory.trajectory.execution import ExecutionBindings, execute_real
 from ufactory.trajectory.preflight import create_safety_gate
@@ -57,7 +59,7 @@ def _build_packaging_context(config: Any, urdf: Path, *, show_viewer: bool = Fal
     )
 
     scene, robot, block, display_layout = build_packaging_scene(
-        sim_dt=1.0 / float(config.motion.rate_hz),
+        sim_dt=1.0 / float(config.simulation.rate_hz),
         show_viewer=show_viewer,
         robot_urdf_path=str(urdf),
         runtime_config=config,
@@ -141,6 +143,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--position-mm", type=float)
     parser.add_argument("--speed-percent", type=float)
     parser.add_argument("--force-percent", type=float)
+    parser.add_argument(
+        "--allow-approx-motion",
+        action="store_true",
+        help="Enable firmware-aligned DLS singularity avoidance (mirrors set_allow_approx_motion(True))",
+    )
+    parser.add_argument(
+        "--sim-rate-hz",
+        type=float,
+        default=None,
+        help="Override Genesis physics simulation step rate in Hz (default: 50.0)",
+    )
     parser.add_argument("--visual", action="store_true")
     parser.add_argument("--speed", type=float, default=1.0, help="Simulation-only playback multiplier")
     parser.add_argument("--cycles", type=_positive_cycles, default=None, help="Simulation cycle count (default: 1)")
@@ -167,13 +180,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.visual and args.mode in {"dry-run", "sdk-sim"}:
         parser.error("--visual is only supported with --mode sim or --mode real")
     selected_gripper = None if args.gripper == "default" else args.gripper
+    cli_overrides: dict[str, Any] = dict(gripper_overrides)
+    if args.allow_approx_motion:
+        cli_overrides["motion.allow_approx_motion"] = True
+    if args.sim_rate_hz is not None:
+        cli_overrides["simulation.rate_hz"] = args.sim_rate_hz
     try:
         config = load_runtime_config(
             args.robot,
             task="packaging_showcase",
             gripper=selected_gripper,
             config_path=args.config,
-            overrides=gripper_overrides,
+            overrides=cli_overrides,
         )
     except ValueError as exc:
         parser.error(str(exc))
@@ -186,10 +204,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(
             f"{config.robot.key} has no enabled real gripper; full real packaging is unsupported for this profile"
         )
-    if args.mode != "sim" and (args.executor == "servo_j" or args.visual):
+    if args.mode != "sim" and args.visual:
         require_genesis_capabilities(
             pbr=True,
-            deferred_viewer=bool(args.visual),
+            deferred_viewer=True,
         )
     if args.mode == "sim":
         if config.gripper is not None and config.gripper.adapter == "g2" and config.simulation.g2.speed_percent <= 0:
@@ -219,25 +237,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             flush=True,
         )
 
-    genesis = None
     bridge = None
     try:
         urdf, urdf_hash, calibration_hash = _model_and_hashes(config, args.calibration, serial)
         kinematics, collision = _backends(config, urdf)
-        ik_ctx = None
         q_home: np.ndarray | None = None
         if args.executor == "servo_j":
-            from ufactory.trajectory.ik import compile_cartesian_program_to_joint_stream
+            from ufactory.trajectory.ik import (
+                ArmIKContext,
+                compile_cartesian_program_to_joint_stream,
+                solve_arm_home_q,
+            )
 
             print(
-                "[ik-compile] building Genesis scene and compiling servo_j trajectory...",
+                "[ik-compile] compiling servo_j trajectory with ArmMotionController...",
                 flush=True,
             )
             ik_started = time.perf_counter()
-            genesis = GenesisRuntimeManager(config.simulation)
-            genesis.__enter__()
-            ik_ctx = _build_packaging_context(config, urdf, show_viewer=False)
-            q_home = np.asarray(ik_ctx.home_qpos, dtype=np.float64)[ik_ctx.arm_dof_idx]
+            layout = packaging_layout(config)
+            q_home = solve_arm_home_q(
+                kinematics,
+                layout.home_position_m,
+                default_qpos_rad=config.arm.default_qpos_rad,
+            )
+            ik_ctx = ArmIKContext(
+                arm_controller=kinematics,
+                robot_key=config.robot.key,
+                robot_urdf_path=str(urdf),
+                kinematics_yaml_path=str(args.calibration) if args.calibration is not None else None,
+                kinematics_suffix=serial,
+            )
             program = compile_cartesian_program_to_joint_stream(
                 build_packaging_program(config, q_home=q_home),
                 ik_ctx,
@@ -272,6 +301,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Read once so SDK simulation and real execution share the same TCP conversion.
         tcp_offset = read_tcp_offset(arm)
         print(f"[hardware] controller tcp_offset={tcp_offset.tolist()} (xyz mm, rpy rad)", flush=True)
+        check_controller_tcp_offset(
+            tcp_offset,
+            resolve_tool_tcp_spec(config).tcp_offset_mm_deg,
+            mode=args.mode,
+        )
         transport = XArmTransport(arm, robot_key=config.robot.key, serial_number=serial, tcp_offset=tcp_offset)
         shadow = None
         stages = None
@@ -298,7 +332,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.executor == "servo_cartesian" or args.mode == "sdk-sim":
             if shadow is None or stages is None:
                 shadow, stages = gate.shadow_joint_stream(program)
-            firmware = _sdk_sim_feedback(arm, program, config, start_q, tcp_offset=tcp_offset)
+            firmware = _sdk_sim_feedback(
+                arm,
+                program,
+                config,
+                start_q,
+                tcp_offset=tcp_offset,
+                allow_approx_motion=config.motion.allow_approx_motion,
+            )
             evidence = validate_sdk_simulation(
                 robot_key=config.robot.key,
                 serial_number=serial,
@@ -311,6 +352,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 kinematics=kinematics,
                 collision=collision,
                 allowed_collision=gate.collision_allowed,
+                joint_lower_rad=gate.joint_lower_rad,
+                joint_upper_rad=gate.joint_upper_rad,
             )
             evidence_path = _sdk_evidence_path(args.report, config.robot.key)
             _write_json(evidence_path, asdict(evidence))
@@ -334,13 +377,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.visual:
             from ufactory.trajectory.mirror_process import PackagingMirrorProcess
 
-            # The servo_j compiler no longer needs its Genesis scene. Destroy
-            # it before the isolated viewer starts so GPU memory is not held by
-            # two Genesis runtimes at once.
-            if genesis is not None:
-                genesis.__exit__(None, None, None)
-                genesis = None
-                ik_ctx = None
             bridge = PackagingMirrorProcess(
                 approved.program,
                 robot_key=config.robot.key,
@@ -359,28 +395,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         current_drive, gripper_sender = prepare_real_gripper_sender(arm, transport, config.gripper)
 
-        execution = execute_real(
-            approved,
-            transport=transport,
-            bindings=ExecutionBindings(
-                robot_key=config.robot.key,
-                serial_number=serial,
-                config_sha256=config.sha256,
-                urdf_sha256=urdf_hash,
-                calibration_sha256=calibration_hash,
-                scene_sha256=scene_hash,
-            ),
-            confirm_real=True,
-            runtime_monitor=lambda q, stage: gate.runtime_monitor(
-                q,
-                stage,
-                gripper_drive=current_drive[0],
-                include_collision=False,
-            ),
-            gripper_sender=gripper_sender,
-            on_tick=bridge.on_tick if bridge is not None else None,
-            not_ready_codes=frozenset((9,)),
+        switch_ctx = (
+            kinematics.sync_hardware_switches(arm)
+            if args.executor == "servo_cartesian"
+            and callable(getattr(kinematics, "sync_hardware_switches", None))
+            and callable(getattr(arm, "set_allow_approx_motion", None))
+            else nullcontext()
         )
+        with switch_ctx:
+            execution = execute_real(
+                approved,
+                transport=transport,
+                bindings=ExecutionBindings(
+                    robot_key=config.robot.key,
+                    serial_number=serial,
+                    config_sha256=config.sha256,
+                    urdf_sha256=urdf_hash,
+                    calibration_sha256=calibration_hash,
+                    scene_sha256=scene_hash,
+                ),
+                confirm_real=True,
+                runtime_monitor=lambda q, stage: gate.runtime_monitor(
+                    q,
+                    stage,
+                    gripper_drive=current_drive[0],
+                    include_collision=False,
+                ),
+                gripper_sender=gripper_sender,
+                on_tick=bridge.on_tick if bridge is not None else None,
+                not_ready_codes=frozenset((9,)),
+            )
         print_real_execution_summary(execution)
         if bridge is not None:
             bridge.hold_until_closed()
@@ -388,8 +432,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     finally:
         if bridge is not None:
             bridge.close()
-        if genesis is not None:
-            genesis.__exit__(None, None, None)
         if arm is not None and getattr(arm, "connected", False):
             arm.disconnect()
 

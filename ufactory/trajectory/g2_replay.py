@@ -198,7 +198,13 @@ def _replay_calibrated(
 ):
     from ufactory.trajectory.g2_confirmation import summarize
     from ufactory.trajectory.mirror_executor import resolve_tick_arm_q
-    from ufactory.trajectory.sim_executor import PhaseStatus, SimReport, _assert_finite_replay_state
+    from ufactory.trajectory.sim_executor import (
+        PhaseStatus,
+        SimReport,
+        _assert_finite_replay_state,
+        _resolve_sim_rate_hz,
+        physics_steps_for_tick,
+    )
 
     if not math.isfinite(final_metric_settle_s) or final_metric_settle_s < 0:
         raise ValueError("final_metric_settle_s must be finite and non-negative")
@@ -206,19 +212,26 @@ def _replay_calibrated(
     adapter.command(open_mm, settings.speed_percent, settings.force_percent)
     report = SimReport(physics_profile=physics_profile, physics_parameters=physics_summary)
     report.physics_parameters["command"] = asdict(settings)
-    report.physics_parameters["rate_hz"] = program.rate
     report.physics_parameters.update(getattr(ctx, "simulation_parameters", {}))
     rate, dt = float(program.rate), 1 / float(program.rate)
+    sim_rate_hz = _resolve_sim_rate_hz(ctx, rate)
+    sim_dt = 1.0 / sim_rate_hz
+    report.physics_parameters["rate_hz"] = program.rate
+    report.physics_parameters["sim_rate_hz"] = sim_rate_hz
+    sim_time_acc = 0.0
     q_arm = ctx.home_qpos[ctx.arm_dof_idx].astype(np.float64).copy()
     previous_gap = adapter.gap_mm()
     pending_confirmation = None
 
     def tick(segment, tick_index):
-        nonlocal previous_gap, pending_confirmation
+        nonlocal previous_gap, pending_confirmation, sim_time_acc
         actual_q = ctx.robot.get_dofs_position(ctx.arm_dof_idx)
         ctx.robot.control_dofs_position(actual_q.new_tensor(q_arm).reshape(actual_q.shape), ctx.arm_dof_idx)
-        output = adapter.apply(dt)
-        ctx.scene.step()
+        n_phys, sim_time_acc = physics_steps_for_tick(sim_rate_hz, rate, sim_time_acc)
+        output = None
+        for _ in range(max(1, n_phys)):
+            output = adapter.apply(sim_dt)
+            ctx.scene.step()
         _assert_finite_replay_state(ctx, phase=segment.label, tick=tick_index)
         row = _record(
             ctx,
@@ -267,7 +280,7 @@ def _replay_calibrated(
                 if segment.kind != "gripper":
                     started = time.perf_counter_ns()
                     try:
-                        q_arm = resolve_tick_arm_q(ctx, segment, samples, t, init_qpos=q_arm)
+                        q_arm = resolve_tick_arm_q(ctx, segment, samples, t, init_qpos=q_arm, dt_s=dt)
                     except Exception:
                         status.ik_failures += 1
                         raise

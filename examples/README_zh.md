@@ -70,26 +70,28 @@ python examples/visualization/view_robot.py --robot xarm6
 | `uf850` | Gripper G2、Bio Gripper G2、Robotiq 2F-85、Robotiq 2F-140、Vacuum Gripper | 裸臂、Gripper G2、Robotiq 2F-85、Robotiq 2F-140、Vacuum Gripper（不适配 Bio Gripper G2） | 支持 | — |
 | `lite6` | Lite6 Gripper、Lite6 Vacuum Gripper | 裸臂、Lite6 Gripper、Lite6 Vacuum Gripper | 支持 | Lite6 Gripper |
 
-所有机械臂均支持加装[相机支架](../assets/urdf/camera_stand/README.md)（可单独安装或搭载一台视野沿工具轴方向的深度相机）；装上支架后，末端及其 TCP 沿工具轴前移 3 mm：
+所有机械臂均支持加装[相机支架](../assets/urdf/mounts/camera_stand/README.md)（可单独安装或搭载一台视野沿工具轴方向的深度相机）；装上支架后，末端及其 TCP 沿工具轴前移 3 mm：
 
 | 配件 key | 名称 | 说明 |
 |---|---|---|
-| `camera_stand` | [相机支架](../assets/urdf/camera_stand/README.md) | 3 mm 铝合金支架（48 g） |
-| `d405` | [Intel RealSense D405](../assets/urdf/d405/README.md) | 支架 + D405 短距双目深度相机（58 g） |
-| `d435` | [Intel RealSense D435](../assets/urdf/d435/README.md) | 支架 + D435 双目深度相机（75 g） |
-| `gemini_305` | [奥比中光 Gemini 305](../assets/urdf/gemini_305/README.md) | 支架 + Gemini 305 双目深度相机（68 g） |
-| `zed_x_nano` | [Stereolabs ZED X Nano](../assets/urdf/zed_x_nano/README.md) | 支架 + ZED X Nano 双目相机（75 g） |
+| `camera_stand` | [相机支架](../assets/urdf/mounts/camera_stand/README.md) | 3 mm 铝合金支架（48 g） |
+| `d405` | [Intel RealSense D405](../assets/urdf/cameras/d405/README.md) | 支架 + D405 短距双目深度相机（58 g） |
+| `d435` | [Intel RealSense D435](../assets/urdf/cameras/d435/README.md) | 支架 + D435 双目深度相机（75 g） |
+| `gemini_305` | [奥比中光 Gemini 305](../assets/urdf/cameras/gemini_305/README.md) | 支架 + Gemini 305 双目深度相机（68 g） |
+| `zed_x_nano` | [Stereolabs ZED X Nano](../assets/urdf/cameras/zed_x_nano/README.md) | 支架 + ZED X Nano 双目相机（75 g） |
 
-- 配置中的 URDF 引用示例：`assembly:gripper_g2+d435`、`assembly:lite6_gripper+d435`、`assembly:bare+camera_stand`、`assembly:bare+mounting_plate` 或 `assembly:gripper_g2+d435+mounting_plate`。
+- 配置中的 URDF 引用示例：`assembly:gripper_g2+d435`、`assembly:gripper_g2+ft_sensor_ai1500+d435`、`assembly:lite6_gripper+d435`、`assembly:bare+ft_sensor_ai1500`、`assembly:bare+camera_stand`、`assembly:bare+mounting_plate` 或 `assembly:gripper_g2+d435+mounting_plate`。
 - 真机说明与安全约束见[真机操作与硬件校验](#真机操作与硬件校验)；G2 仿真使用 `g2_calibrated_v1`，策略训练与当前 v3 检查点契约见[抓放 RL 指南](rl/pick_place/README_zh.md)。
+
+`xarm5`、`xarm6`、`xarm7` 与 `uf850` 均支持在末端法兰上加装 [AI1500 六维力矩传感器](../assets/urdf/accessories/ft_sensor_ai1500/README.md)（沿法兰 `+Z` 抬升 `58.6 mm`、`0.6 kg`，位于相机支架、转接板及末端执行器之前）。
 
 全部 5 款机械臂均支持加装对应铝合金安装底板（安装在 `link_base` 下方，上安装面 `z = 0`，不改变机械臂运动学坐标）：
 
 | 安装底板 | 适配机型 | 外形包络（mm） | 独立查看 `--tool` |
 |---|---|---|---|
-| [xArm 安装底板](../assets/urdf/xarm_mounting_plate/README.md) | `xarm5`、`xarm6`、`xarm7` | `136 × 185 × 8` | `xarm_mounting_plate` |
-| [UF850 安装底板](../assets/urdf/uf850_mounting_plate/README.md) | `uf850` | `190 × 260 × 10` | `uf850_mounting_plate` |
-| [Lite 6 安装底板](../assets/urdf/lite6_mounting_plate/README.md) | `lite6` | `130 × 190 × 5` | `lite6_mounting_plate` |
+| [xArm 安装底板](../assets/urdf/mounts/xarm_mounting_plate/README.md) | `xarm5`、`xarm6`、`xarm7` | `136 × 185 × 8` | `xarm_mounting_plate` |
+| [UF850 安装底板](../assets/urdf/mounts/uf850_mounting_plate/README.md) | `uf850` | `190 × 260 × 10` | `uf850_mounting_plate` |
+| [Lite 6 安装底板](../assets/urdf/mounts/lite6_mounting_plate/README.md) | `lite6` | `130 × 190 × 5` | `lite6_mounting_plate` |
 
 ## 可视化
 
@@ -134,11 +136,15 @@ python examples/visualization/view_robot.py --robot lite6 --lite6-vacuum-gripper
 # xArm6 + Gripper G2 + D435 + 安装底板
 python examples/visualization/view_robot.py --robot xarm6 --gripper-g2 --camera d435 --mounting-plate
 
-# 末端工具、转接件与安装底板独立查看
+# xArm6 + AI1500 六维力矩传感器 + D435 + Gripper G2
+python examples/visualization/view_robot.py --robot xarm6 --ft-sensor --gripper-g2 --camera d435 --gripper-demo
+
+# 末端工具、转接件、力矩传感器与安装底板独立查看
 python examples/visualization/view_tool.py --tool gripper_g2
 python examples/visualization/view_tool.py --tool robotiq_2f_85
 python examples/visualization/view_tool.py --tool robotiq_2f_140
 python examples/visualization/view_tool.py --tool robotiq_mounting
+python examples/visualization/view_tool.py --tool ft_sensor_ai1500
 python examples/visualization/view_tool.py --tool bio_gripper_g2
 python examples/visualization/view_tool.py --tool lite6_gripper
 python examples/visualization/view_tool.py --tool vacuum_gripper
@@ -155,6 +161,7 @@ python examples/visualization/view_tool.py --tool lite6_mounting_plate
 | `--robot`                                                                          | 必选机型 key                              |
 | `--gripper-g2` / `--bio-gripper-g2` / `--robotiq-2f-85` / `--robotiq-2f-140` / `--vacuum-gripper` / `--lite6-gripper` / `--lite6-vacuum-gripper` | 末端组合（最多选一个）                           |
 | `--camera`                                                                         | `camera_stand`、`d405`、`d435`、`gemini_305` 或 `zed_x_nano`：加装相机支架，可单独装支架，也可再装对应相机（适配所有机型，支持裸臂及除 `--bio-gripper-g2` 外的末端） |
+| `--ft-sensor`                                                                      | 在末端法兰加装六维力矩传感器（适配 `xarm5`/`xarm6`/`xarm7`/`uf850`；不填值时默认 `ft_sensor_ai1500`） |
 | `--mounting-plate`                                                                 | 在 `link_base` 下方加装对应铝合金安装底板             |
 | `--movable`                                                                        | 兼容保留（所有夹爪默认均使用逐连杆可动 GLB）              |
 | `--gripper-demo`                                                                   | 循环开合，到位后保持 0.5 s 切换（需配合夹爪标志）          |
@@ -164,7 +171,7 @@ python examples/visualization/view_tool.py --tool lite6_mounting_plate
 | `--headless`                                                                       | 不打开查看器窗口                              |
 | `--backend`                                                                        | `cpu` / `gpu`（默认 `gpu`；无支持显卡时用 `cpu`） |
 
-`view_tool.py` 支持 `--tool {gripper_g2,robotiq_2f_85,robotiq_2f_140,robotiq_mounting,bio_gripper_g2,lite6_gripper,vacuum_gripper,lite6_vacuum_gripper,xarm_mounting_plate,uf850_mounting_plate,lite6_mounting_plate}`、`--headless`、`--backend`，以及标定夹爪调参选项（`--position-mm`、`--speed-percent`、`--force-percent`，其中 `bio_gripper_g2` 另支持 `--speed-mm-s`）。
+`view_tool.py` 支持 `--tool {gripper_g2,robotiq_2f_85,robotiq_2f_140,robotiq_mounting,ft_sensor_ai1500,bio_gripper_g2,lite6_gripper,vacuum_gripper,lite6_vacuum_gripper,xarm_mounting_plate,uf850_mounting_plate,lite6_mounting_plate}`、`--headless`、`--backend`，以及标定夹爪调参选项（`--position-mm`、`--speed-percent`、`--force-percent`，其中 `bio_gripper_g2` 另支持 `--speed-mm-s`）。
 
 
 
@@ -246,6 +253,14 @@ dynamics-sim-collision-check --robot xarm6 --ip <ip>
 python examples/simulation/packaging/run.py \
   --robot lite6 --mode sdk-sim --executor servo_cartesian \
   --ip <ip> --calibration path/to/exact.yaml
+
+# xArm6 + Bio Gripper G2：抓放控制器内部虚拟仿真（sdk-sim，支持 servo_j / servo_cartesian）
+python examples/simulation/pick_place/run.py \
+  --robot xarm6 --gripper bio_gripper_g2 --mode sdk-sim --executor servo_j \
+  --ip <ip> --calibration path/to/exact.yaml
+python examples/simulation/pick_place/run.py \
+  --robot xarm6 --gripper bio_gripper_g2 --mode sdk-sim --executor servo_cartesian \
+  --ip <ip> --calibration path/to/exact.yaml
 ```
 
 
@@ -261,6 +276,14 @@ dynamics-hardware-check --robot xarm6 --ip <ip> --confirm-real
 # xArm6 + Gripper G2：抓放真机物理运动（需实机标定文件与 --confirm-real）
 XARM_IP=<ip> python examples/simulation/pick_place/run.py \
   --robot xarm6 --mode real --executor servo_j \
+  --calibration path/to/exact.yaml --confirm-real
+
+# xArm6 + Bio Gripper G2：抓放真机物理运动（支持 servo_j / servo_cartesian，可选 --visual 镜像；需实机标定文件与 --confirm-real）
+XARM_IP=<ip> python examples/simulation/pick_place/run.py \
+  --robot xarm6 --gripper bio_gripper_g2 --mode real --executor servo_j --visual \
+  --calibration path/to/exact.yaml --confirm-real
+XARM_IP=<ip> python examples/simulation/pick_place/run.py \
+  --robot xarm6 --gripper bio_gripper_g2 --mode real --executor servo_cartesian \
   --calibration path/to/exact.yaml --confirm-real
 
 # Lite6 + Lite6 Gripper：装箱真机物理运动（当前仅支持 xArm6 + Gripper G2、Lite6 + Lite6 Gripper；需实机标定文件与 --confirm-real）

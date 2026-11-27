@@ -305,7 +305,7 @@ def test_camera_sits_on_the_stand_holes_and_looks_along_flange_z(arm: str, camer
 
 
 def test_stand_frames_match_the_drawing() -> None:
-    model, data = _placements(URDF_ROOT / "camera_stand" / "camera_stand.urdf")
+    model, data = _placements(URDF_ROOT / "mounts" / "camera_stand" / "camera_stand.urdf")
     expected_mm = {
         "stand_camera_mount": (67.5, 3.0, 0.0),
         "stand_hole_20_0": (67.5, 3.0, -10.0),
@@ -409,7 +409,8 @@ def _glb_json(path: Path) -> dict[str, object]:
 
 @pytest.mark.parametrize("part", ACCESSORIES)
 def test_part_assets_budget_inertia_and_license(part: str) -> None:
-    glb = URDF_ROOT / part / "meshes" / "visual" / f"{part}.glb"
+    part_dir = URDF_ROOT / ("mounts" if part == "camera_stand" else "cameras") / part
+    glb = part_dir / "meshes" / "visual" / f"{part}.glb"
     assert glb.stat().st_size < 1_000_000
     meta = _glb_json(glb)
     assert meta["extensionsRequired"] == ["KHR_draco_mesh_compression"]
@@ -419,7 +420,10 @@ def test_part_assets_budget_inertia_and_license(part: str) -> None:
     )
     if part in ("camera_stand", "d405", "d435", "gemini_305"):
         housing_pbr = meta["materials"][0]["pbrMetallicRoughness"]  # type: ignore[index]
-        for arm_glb in ("xarm6/meshes/xarm6_1305/visual_glb/link6.glb", "uf850/meshes/uf850/visual_glb/link6.glb"):
+        for arm_glb in (
+            "robots/xarm6/meshes/xarm6_1305/visual_glb/link6.glb",
+            "robots/uf850/meshes/uf850/visual_glb/link6.glb",
+        ):
             arm_meta = _glb_json(URDF_ROOT / arm_glb)
             arm_metals = [
                 m["pbrMetallicRoughness"]
@@ -437,7 +441,7 @@ def test_part_assets_budget_inertia_and_license(part: str) -> None:
         glass_pbr = meta["materials"][1]["pbrMetallicRoughness"]  # type: ignore[index]
         np.testing.assert_allclose(glass_pbr["baseColorFactor"], [0.025, 0.03, 0.035, 1.0], atol=1e-4)
 
-    root = ET.parse(URDF_ROOT / part / f"{part}.urdf").getroot()
+    root = ET.parse(part_dir / f"{part}.urdf").getroot()
     base = "camera_stand" if part == "camera_stand" else f"{part}_body"
     inertial = root.find(f"./link[@name='{base}']/inertial")
     assert inertial is not None
@@ -447,15 +451,16 @@ def test_part_assets_budget_inertia_and_license(part: str) -> None:
     tensor = np.array([[i["ixx"], i["ixy"], i["ixz"]], [i["ixy"], i["iyy"], i["iyz"]], [i["ixz"], i["iyz"], i["izz"]]])
     eig = np.linalg.eigvalsh(tensor)
     assert eig.min() > 0.0 and eig[0] + eig[1] > eig[2]
-    assert (URDF_ROOT / part / "README.md").is_file()
-    assert (URDF_ROOT / part / "LICENSE").is_file() == (part in ("d405", "d435"))
+    assert (part_dir / "README.md").is_file()
+    assert (part_dir / "LICENSE").is_file() == (part in ("d405", "d435"))
 
 
 def test_stand_collision_is_45_prisms() -> None:
-    root = ET.parse(URDF_ROOT / "camera_stand" / "camera_stand.urdf").getroot()
+    stand_dir = URDF_ROOT / "mounts" / "camera_stand"
+    root = ET.parse(stand_dir / "camera_stand.urdf").getroot()
     meshes = [m.get("filename") for m in root.findall("./link[@name='camera_stand']/collision/geometry/mesh")]
     assert meshes == [f"meshes/collision/piece_{i:03d}.stl" for i in range(45)]
-    files = sorted(p.name for p in (URDF_ROOT / "camera_stand" / "meshes" / "collision").iterdir())
+    files = sorted(p.name for p in (stand_dir / "meshes" / "collision").iterdir())
     assert files == [f"piece_{i:03d}.stl" for i in range(45)]
 
 

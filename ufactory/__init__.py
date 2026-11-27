@@ -1,6 +1,7 @@
 """Minimal robot catalog and source-asset access API."""
 
 from ufactory.config.assets import AssetLayoutError, RepositoryAssetStore
+from ufactory.control import ArmMotionController
 from ufactory.robots.registry import (
     PROJECT_ROOT,
     ROBOT_PROFILES,
@@ -15,6 +16,7 @@ __all__ = [
     "PROJECT_ROOT",
     "ROBOT_PROFILES",
     "RobotModelSpec",
+    "ArmMotionController",
     "AssetLayoutError",
     "compose_robot_urdf",
     "RepositoryAssetStore",

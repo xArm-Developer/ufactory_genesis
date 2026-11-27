@@ -35,7 +35,9 @@ LITE6_GRIPPER_DAMPING = 0.05
 LITE6_GRIPPER_FRICTIONLOSS = 0.0
 LITE6_GRIPPER_HOLD_BIAS_GAP_M = 0.018
 
-_FINGER_MESH_DIR = Path(__file__).resolve().parents[2] / "assets" / "urdf" / "lite6_gripper" / "meshes" / "collision"
+_FINGER_MESH_DIR = (
+    Path(__file__).resolve().parents[2] / "assets" / "urdf" / "end_effectors" / "lite6_gripper" / "meshes" / "collision"
+)
 _FINGER1_VISUAL_ORIGIN_M = np.asarray((0.0, 0.0, 0.0), dtype=np.float64)
 _FINGER2_VISUAL_ORIGIN_M = np.asarray((0.0, 0.0, 0.0), dtype=np.float64)
 _FINGER1_VERTS: np.ndarray | None = None

@@ -206,3 +206,38 @@ def test_retime_ik_joint_stream_and_compile_handle_unconstrained_limits_without_
             v_max=0.0,
             a_max=0.0,
         )
+
+
+def test_arm_ik_context_and_solve_arm_home_q_pure_numpy():
+    from ufactory.control import ArmMotionController
+    from ufactory.trajectory.ik import ArmIKContext, solve_arm_home_q
+
+    controller = ArmMotionController.from_robot(
+        "xarm6",
+        tcp_offset_mm_rpy=(157.64, 0.0, 59.5, 0.0, 0.0, 0.0),
+    )
+    q_flange = solve_arm_home_q(controller, [0.22236, -0.12, 0.30], include_tcp=False)
+    q_tcp = solve_arm_home_q(controller, [0.38, -0.12, 0.30 - 0.0595], include_tcp=True)
+    np.testing.assert_allclose(q_flange, q_tcp, atol=1e-5)
+
+    limits = JointLimits(0.35, 2.0, 0.14, 0.8)
+    move_seg = make_movel(
+        np.array([0.22236, -0.12, 0.30]),
+        np.array([0.22236, -0.12, 0.20]),
+        rate=50.0,
+        limits=limits,
+        label="descend",
+    )
+    source = Program(rate=50.0, robot_key="xarm6_1305", limits=limits, segments=[move_seg])
+    ctx = ArmIKContext(
+        arm_controller=controller,
+        robot_key="xarm6_1305",
+        robot_urdf_path="/tmp/xarm6.urdf",
+        kinematics_yaml_path="/tmp/cal.yaml",
+        kinematics_suffix="L56A01",
+        include_tcp=False,
+    )
+    compiled = compile_cartesian_program_to_joint_stream(source, ctx)
+    assert compiled.segments[0].kind == "movej"
+    assert compiled.metadata["ik_kinematics_suffix"] == "L56A01"
+    np.testing.assert_allclose(compiled.segments[0].q_start, q_flange, atol=1e-4)

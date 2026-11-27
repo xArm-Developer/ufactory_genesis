@@ -6,7 +6,7 @@ robot:
   dof: 6
   joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
   ee_link: link6
-  assets_dir: assets/urdf/lite6
+  assets_dir: assets/urdf/robots/lite6
   urdf: "assembly:lite6_gripper:stl"
   capabilities: [servo_j, servo_cartesian, lite6_gripper, sdk_sim, hardware_gripper]
   environment_contact_pairs: [[link_base, table]]
@@ -44,3 +44,4 @@ gripper:
   finger_close_descent_m: 0.0
   grasp_table_clearance_m: 0.006
   grasp_height_extra_m: 0.015
+  tcp_offset: [0.0, 0.0, 75.3, 0.0, 0.0, 0.0]

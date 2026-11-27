@@ -162,6 +162,7 @@ def _build_resolved(data: dict[str, Any], sources: tuple[str, ...]) -> ResolvedR
         geometry_pairs = gripper_data.get("excluded_geometry_pairs", [])
         if not isinstance(geometry_pairs, list) or any(not isinstance(pair, list | tuple) for pair in geometry_pairs):
             raise ConfigError("gripper.excluded_geometry_pairs must be a list of geometry pairs")
+        tcp_offset_raw = _tuple_floats(gripper_data["tcp_offset"], field="gripper.tcp_offset", size=6)
         gripper = GripperProfile(
             adapter=str(gripper_data["adapter"]),
             drive_joint=str(gripper_data["drive_joint"]),
@@ -187,6 +188,14 @@ def _build_resolved(data: dict[str, Any], sources: tuple[str, ...]) -> ResolvedR
             grasp_table_clearance_m=float(gripper_data["grasp_table_clearance_m"]),
             grasp_height_extra_m=float(gripper_data["grasp_height_extra_m"]),
             excluded_geometry_pairs=tuple(tuple(pair) for pair in geometry_pairs),
+            tcp_offset=(
+                tcp_offset_raw[0],
+                tcp_offset_raw[1],
+                tcp_offset_raw[2],
+                tcp_offset_raw[3],
+                tcp_offset_raw[4],
+                tcp_offset_raw[5],
+            ),
         )
     task_parameters = task_data["parameters"]
     if not isinstance(task_parameters, Mapping):
@@ -343,6 +352,9 @@ def _build_resolved(data: dict[str, Any], sources: tuple[str, ...]) -> ResolvedR
         allowed_contacts=task_data["allowed_contacts"],
     )
     motion_data = data["motion"]
+    raw_allow_approx = motion_data.get("allow_approx_motion", False)
+    if not isinstance(raw_allow_approx, bool):
+        raise ConfigError("motion.allow_approx_motion must be a boolean")
     motion = MotionConfig(
         rate_hz=_positive(motion_data["rate_hz"], field="motion.rate_hz"),
         joint_speed_rad_s=_positive(motion_data["joint_speed_rad_s"], field="motion.joint_speed_rad_s"),
@@ -354,8 +366,13 @@ def _build_resolved(data: dict[str, Any], sources: tuple[str, ...]) -> ResolvedR
             motion_data["cartesian_acceleration_m_s2"], field="motion.cartesian_acceleration_m_s2"
         ),
         gripper_duration_s=_positive(motion_data["gripper_duration_s"], field="motion.gripper_duration_s"),
+        allow_approx_motion=raw_allow_approx,
     )
     simulation_data = data["simulation"]
+    raw_sim_rate = simulation_data.get("rate_hz", 50.0)
+    if isinstance(raw_sim_rate, bool):
+        raise ConfigError("simulation.rate_hz must be finite and positive")
+    simulation_rate_hz = _positive(raw_sim_rate, field="simulation.rate_hz")
     raw_simulation_substeps = simulation_data["substeps"]
     if isinstance(raw_simulation_substeps, bool) or not isinstance(raw_simulation_substeps, int):
         raise ConfigError("simulation.substeps must be a positive integer")
@@ -382,6 +399,7 @@ def _build_resolved(data: dict[str, Any], sources: tuple[str, ...]) -> ResolvedR
         show_viewer=bool(simulation_data.get("show_viewer", False)),
         g2=G2SimulationConfig(**simulation_data["g2"]),
         robotiq=RobotiqSimulationConfig(**simulation_data["robotiq"]),
+        rate_hz=simulation_rate_hz,
     )
     if gripper is not None and gripper.adapter in {"robotiq_2f_85", "robotiq_2f_140"}:
         max_gap_mm = gripper.open_gap_m * 1000.0
@@ -487,6 +505,22 @@ def load_runtime_config(
         elif normalized_gripper == "lite6":
             if default_adapter != "lite6":
                 raise ConfigError(f"robot {canonical} does not support gripper {normalized_gripper}")
+        elif normalized_gripper in {"bio_gripper_g2", "bio_g2"}:
+            try:
+                validate_assembly(canonical, "bio_gripper_g2", root=store.root)
+            except AssemblyError as exc:
+                raise ConfigError(str(exc)) from exc
+            overlay_rel = "assets/configs/runtime/grippers/bio_gripper_g2.yaml"
+            _merge_strict(data, _read_yaml(store.require(overlay_rel)))
+            sources.append(overlay_rel)
+        elif normalized_gripper == "vacuum_gripper":
+            try:
+                validate_assembly(canonical, "vacuum_gripper", root=store.root)
+            except AssemblyError as exc:
+                raise ConfigError(str(exc)) from exc
+            overlay_rel = "assets/configs/runtime/grippers/vacuum_gripper.yaml"
+            _merge_strict(data, _read_yaml(store.require(overlay_rel)))
+            sources.append(overlay_rel)
         elif normalized_gripper in {"robotiq_2f_85", "robotiq_2f_140"}:
             try:
                 validate_assembly(canonical, normalized_gripper, root=store.root)

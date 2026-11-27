@@ -17,7 +17,12 @@ from ufactory.grippers.g2 import gripper_g2_gap_m_to_sim_drive
 from ufactory.grippers.robotiq import robotiq_gap_m_to_sim_drive
 from ufactory.kinematics.orientation import GRIPPER_DOWN_QUAT_XYZW
 from ufactory.safety.approved import ApprovedProgram, issue_approved_program
-from ufactory.safety.interfaces import CollisionBackend, CollisionResult, KinematicsBackend
+from ufactory.safety.interfaces import (
+    CartesianStepController,
+    CollisionBackend,
+    CollisionResult,
+    KinematicsBackend,
+)
 from ufactory.safety.models import (
     PreflightCheck,
     PreflightReport,
@@ -45,6 +50,9 @@ class _Timeline:
     stages: tuple[str, ...]
     gripper_drive: FloatArray
     quaternion_xyzw: FloatArray
+    approx_steps: int = 0
+    max_approx_position_error_m: float = 0.0
+    max_approx_orientation_error_rad: float = 0.0
 
 
 def sha256_file(path: str | Path) -> str:
@@ -204,12 +212,44 @@ class SafetyGate:
                 _violation(ViolationType.BACKEND_UNAVAILABLE, "preflight", "kinematics backend is required")
             )
             return None, violations
+        step_controller = self.kinematics if isinstance(self.kinematics, CartesianStepController) else None
+        if self.config.motion.allow_approx_motion:
+            if step_controller is None:
+                violations.append(
+                    _violation(
+                        ViolationType.BACKEND_UNAVAILABLE,
+                        "preflight",
+                        "allow_approx_motion requires a CartesianStepController kinematics backend",
+                    )
+                )
+                return None, violations
+            if not step_controller.is_approx_motion:
+                violations.append(
+                    _violation(
+                        ViolationType.INVALID_INPUT,
+                        "preflight",
+                        "controller allow_approx_motion does not match runtime configuration",
+                    )
+                )
+                return None, violations
+        elif step_controller is not None and step_controller.is_approx_motion:
+            violations.append(
+                _violation(
+                    ViolationType.INVALID_INPUT,
+                    "preflight",
+                    "controller allow_approx_motion is enabled while runtime configuration disables it",
+                )
+            )
+            return None, violations
         current_q: FloatArray | None = None
         q_rows: list[FloatArray] = []
         xyz_rows: list[FloatArray] = []
         stages: list[str] = []
         drive_rows: list[float] = []
         quaternion_rows: list[FloatArray] = []
+        approx_steps = 0
+        max_approx_pos_err_m = 0.0
+        max_approx_rot_err_rad = 0.0
         current_drive = self.config.gripper.open_drive if self.config.gripper is not None else 0.0
         sample_index = 0
         for segment in program.segments:
@@ -260,11 +300,22 @@ class SafetyGate:
                     continue
                 shadow: list[FloatArray] = []
                 seed = current_q.copy()
+                step_dt = 1.0 / float(program.rate)
                 for offset, row in enumerate(samples):
                     row_index = sample_index + offset
                     try:
                         pose = np.concatenate((row, np.asarray(GRIPPER_DOWN_QUAT_XYZW, dtype=np.float64)))
-                        q = np.asarray(self.kinematics.inverse(pose, seed), dtype=np.float64).reshape(-1)
+                        if step_controller is not None:
+                            step_result = step_controller.solve_step(pose, seed, dt_s=step_dt, include_tcp=False)
+                            q = np.asarray(step_result.q_rad, dtype=np.float64).reshape(-1)
+                            if bool(step_result.used_approx):
+                                approx_steps += 1
+                                max_approx_pos_err_m = max(max_approx_pos_err_m, float(step_result.position_error_m))
+                                max_approx_rot_err_rad = max(
+                                    max_approx_rot_err_rad, float(step_result.orientation_error_rad)
+                                )
+                        else:
+                            q = np.asarray(self.kinematics.inverse(pose, seed), dtype=np.float64).reshape(-1)
                     except Exception as exc:
                         violations.append(
                             _violation(ViolationType.INVALID_INPUT, stage, f"IK failed: {exc}", sample_index=row_index)
@@ -313,12 +364,20 @@ class SafetyGate:
                 gaps = samples.reshape(-1)
                 closed_gap = self.config.gripper.closed_gap_m
                 gap_span = self.config.gripper.open_gap_m - closed_gap
-                ratios = (gaps - closed_gap) / gap_span
-                if np.any(ratios < -1e-12) or np.any(ratios > 1.0 + 1e-12):
-                    violations.append(
-                        _violation(ViolationType.INVALID_INPUT, stage, "gripper gap exceeds configured range")
-                    )
-                    continue
+                if gap_span == 0.0:
+                    if np.any(np.abs(gaps - closed_gap) > 1e-12):
+                        violations.append(
+                            _violation(ViolationType.INVALID_INPUT, stage, "gripper gap exceeds configured range")
+                        )
+                        continue
+                    ratios = np.zeros_like(gaps, dtype=np.float64)
+                else:
+                    ratios = (gaps - closed_gap) / gap_span
+                    if np.any(ratios < -1e-12) or np.any(ratios > 1.0 + 1e-12):
+                        violations.append(
+                            _violation(ViolationType.INVALID_INPUT, stage, "gripper gap exceeds configured range")
+                        )
+                        continue
                 if self.config.gripper.adapter == "g2":
                     drive_segment = np.asarray([gripper_g2_gap_m_to_sim_drive(gap) for gap in gaps])
                 elif self.config.gripper.adapter in {"robotiq_2f_85", "robotiq_2f_140"}:
@@ -390,6 +449,9 @@ class SafetyGate:
             tuple(stages),
             np.asarray(drive_rows, dtype=np.float64),
             np.stack(quaternion_rows),
+            approx_steps=approx_steps,
+            max_approx_position_error_m=max_approx_pos_err_m,
+            max_approx_orientation_error_rad=max_approx_rot_err_rad,
         ), violations
 
     def _allowed_contact(self, result: CollisionResult, stage: str) -> bool:
@@ -422,20 +484,23 @@ class SafetyGate:
 
         if self.collision is None:
             return ()
+        effective_drive = (
+            gripper_drive if self.config.gripper is not None and self.config.gripper.has_actuated_joints else None
+        )
         within_margin = getattr(self.collision, "check_all_within_margin", None)
         if callable(within_margin):
             return tuple(
                 within_margin(
                     q_rad,
                     stage=stage,
-                    gripper_drive=gripper_drive,
+                    gripper_drive=effective_drive,
                     margin_m=self.config.safety.min_collision_distance_m,
                 )
             )
         check_all = getattr(self.collision, "check_all", None)
         if callable(check_all):
-            return tuple(check_all(q_rad, stage=stage, gripper_drive=gripper_drive))
-        return (self.collision.check(q_rad, stage=stage, gripper_drive=gripper_drive),)
+            return tuple(check_all(q_rad, stage=stage, gripper_drive=effective_drive))
+        return (self.collision.check(q_rad, stage=stage, gripper_drive=effective_drive),)
 
     def _collision_query_mode(self) -> str:
         if self.collision is None:
@@ -479,12 +544,26 @@ class SafetyGate:
         build_started = time.perf_counter_ns()
         timeline, build_violations = self._build_timeline(program)
         violations.extend(build_violations)
+        warnings: list[str] = []
+        timeline_details = {
+            "allow_approx_motion": bool(self.config.motion.allow_approx_motion),
+            "approx_steps": 0 if timeline is None else timeline.approx_steps,
+            "max_approx_position_error_m": 0.0 if timeline is None else timeline.max_approx_position_error_m,
+            "max_approx_orientation_error_rad": 0.0 if timeline is None else timeline.max_approx_orientation_error_rad,
+        }
+        if timeline is not None and timeline.approx_steps > 0:
+            warnings.append(
+                f"allow_approx_motion activated on {timeline.approx_steps} sample(s) "
+                f"(max_pos_err={timeline.max_approx_position_error_m * 1e3:.3f} mm, "
+                f"max_rot_err={math.degrees(timeline.max_approx_orientation_error_rad):.3f} deg)"
+            )
         checks.append(
             PreflightCheck(
                 "timeline",
                 timeline is not None and not build_violations,
                 0 if timeline is None else len(timeline.q_rad),
                 (time.perf_counter_ns() - build_started) / 1e6,
+                timeline_details,
             )
         )
         if timeline is not None:
@@ -748,6 +827,7 @@ class SafetyGate:
             scene_sha256=self.scene_sha256,
             checks=tuple(checks),
             violations=tuple(violations),
+            warnings=tuple(warnings),
             exemption_ids=tuple(
                 f"{item.link_a}/{item.link_b}:{item.stage}:{item.expires_version}"
                 for item in self.config.safety.exemptions

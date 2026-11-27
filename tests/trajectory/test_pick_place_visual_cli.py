@@ -10,11 +10,10 @@ import pytest
 
 from ufactory.cli import pick_place
 from ufactory.safety import PreflightCheck, SafetyViolation, ViolationType
-from ufactory.trajectory.mirror_executor import update_scene_visualizer
 from ufactory.visualization.viewer import start_deferred_viewer
 
 
-def test_servo_j_compatibility_fails_before_hardware_connection(monkeypatch):
+def test_visual_compatibility_fails_before_hardware_connection(monkeypatch):
     connected = False
 
     def _reject_capabilities(**_kwargs):
@@ -37,6 +36,7 @@ def test_servo_j_compatibility_fails_before_hardware_connection(monkeypatch):
                 "real",
                 "--executor",
                 "servo_j",
+                "--visual",
                 "--ip",
                 "192.0.2.1",
                 "--calibration",
@@ -45,6 +45,37 @@ def test_servo_j_compatibility_fails_before_hardware_connection(monkeypatch):
             ]
         )
     assert connected is False
+
+
+@pytest.mark.parametrize(
+    ("cli_name", "argv"),
+    [
+        ("pick_place", ["--robot", "xarm6", "--mode", "dry-run", "--executor", "servo_j"]),
+        (
+            "pick_place",
+            ["--robot", "xarm6", "--gripper", "bio_gripper_g2", "--mode", "dry-run", "--executor", "servo_j"],
+        ),
+        ("packaging", ["--robot", "xarm6", "--mode", "dry-run", "--executor", "servo_j"]),
+    ],
+)
+def test_headless_servo_j_skips_genesis_for_pick_place_and_packaging(monkeypatch, tmp_path, cli_name, argv):
+    pytest.importorskip("pinocchio")
+    from ufactory.cli import packaging
+    import ufactory.simulation as simulation_pkg
+
+    def _forbid_genesis(*_args, **_kwargs):
+        raise AssertionError("Genesis must not be checked or initialized for headless servo_j")
+
+    monkeypatch.setattr(pick_place, "require_genesis_capabilities", _forbid_genesis)
+    monkeypatch.setattr(pick_place, "GenesisRuntimeManager", _forbid_genesis)
+    monkeypatch.setattr(packaging, "require_genesis_capabilities", _forbid_genesis)
+    monkeypatch.setattr(simulation_pkg, "GenesisRuntimeManager", _forbid_genesis)
+
+    report = tmp_path / f"{cli_name}_servo_j.json"
+    module = pick_place if cli_name == "pick_place" else packaging
+    rc = module.main([*argv, "--report", str(report)])
+    assert rc == 0
+    assert report.is_file()
 
 
 def test_visual_rejected_for_dry_run(capsys):
@@ -341,6 +372,10 @@ def test_hold_viewer_runs_until_window_closes_and_paces_mirror(monkeypatch, caps
 
 
 def test_mirror_visual_update_drops_frame_when_render_lock_is_busy():
+    pytest.importorskip("torch")
+    pytest.importorskip("genesis")
+    from ufactory.trajectory.mirror_executor import update_scene_visualizer
+
     class BusyLock:
         def acquire(self, *, blocking: bool) -> bool:
             assert blocking is False
@@ -356,3 +391,104 @@ def test_mirror_visual_update_drops_frame_when_render_lock_is_busy():
 
     assert update_scene_visualizer(scene) is False
     assert context_updates == []
+
+
+def test_mirror_visual_update_supports_genesis_1_4_7_rigid_geoms_t():
+    pytest.importorskip("torch")
+    pytest.importorskip("genesis")
+    from ufactory.trajectory.mirror_executor import update_scene_visualizer
+    import numpy as np
+
+    class FreeLock:
+        def acquire(self, *, blocking: bool) -> bool:
+            assert blocking is False
+            return True
+
+        def release(self) -> None:
+            pass
+
+    geom_0 = SimpleNamespace(uid="g0", idx=0)
+    geom_1 = SimpleNamespace(uid="g1", idx=1)
+    solver = SimpleNamespace()  # No _vgeoms_render_T (Genesis 1.4.7+).
+    entity_a = SimpleNamespace(
+        _morph=SimpleNamespace(enable_custom_vverts=False),
+        _solver=solver,
+        surface=SimpleNamespace(vis_mode="visual"),
+        vgeoms=[geom_0],
+        geoms=[],
+    )
+    entity_b = SimpleNamespace(
+        _morph=SimpleNamespace(enable_custom_vverts=False),
+        _solver=solver,
+        surface=SimpleNamespace(vis_mode="visual"),
+        vgeoms=[geom_1],
+        geoms=[],
+    )
+    t0 = np.eye(4, dtype=np.float32)
+    t0[0, 3] = 0.25
+    t1 = np.eye(4, dtype=np.float32)
+    t1[1, 3] = -0.15
+    # Genesis 1.4.7 rigid_geoms_T layout: (n_rendered_envs, n_geoms, 4, 4).
+    geoms_t = np.stack([t0, t1], axis=0)[None, ...]
+    rigid_calls: list[tuple[object, bool]] = []
+
+    def rigid_geoms_t(s, is_visual: bool):
+        rigid_calls.append((s, is_visual))
+        return geoms_t
+
+    node_0 = SimpleNamespace(mesh=SimpleNamespace(_bounds="old", primitives=[SimpleNamespace(poses=None)]))
+    node_1 = SimpleNamespace(mesh=SimpleNamespace(_bounds="old", primitives=[SimpleNamespace(poses=None)]))
+    uploaded: list[tuple[object, str, np.ndarray]] = []
+    context = SimpleNamespace(
+        visualizer=SimpleNamespace(update_visual_states=lambda **kwargs: None),
+        _scene=SimpleNamespace(_bounds="old"),
+        rigid_nodes={"g0": node_0, "g1": node_1},
+        rendered_envs_idx=[0],
+        rigid_geoms_T=rigid_geoms_t,
+        _get_geom_active_envs_idx=lambda geom, rendered: list(rendered),
+        jit=SimpleNamespace(update_buffer=lambda node, name, arr: uploaded.append((node, name, arr))),
+        update=lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not fall back to full update")),
+    )
+    viewer = SimpleNamespace(
+        _pyrender_viewer=SimpleNamespace(render_lock=FreeLock(), update_on_sim_step=lambda: None),
+        context=context,
+        is_alive=lambda: True,
+    )
+    scene = SimpleNamespace(visualizer=SimpleNamespace(viewer=viewer))
+
+    assert update_scene_visualizer(scene, entities=(entity_a, entity_b)) is True
+    assert rigid_calls == [(solver, True)]
+    assert len(uploaded) == 2
+    np.testing.assert_allclose(node_0.mesh.primitives[0].poses[0], t0)
+    np.testing.assert_allclose(node_1.mesh.primitives[0].poses[0], t1)
+    np.testing.assert_allclose(uploaded[0][2][0], t0.T)
+    np.testing.assert_allclose(uploaded[1][2][0], t1.T)
+
+
+def test_mirror_visual_update_falls_back_to_context_update_for_genesis_1_5():
+    pytest.importorskip("torch")
+    pytest.importorskip("genesis")
+    from ufactory.trajectory.mirror_executor import update_scene_visualizer
+
+    class FreeLock:
+        def acquire(self, *, blocking: bool) -> bool:
+            return True
+
+        def release(self) -> None:
+            pass
+
+    fallback_calls: list[bool] = []
+    # Genesis 1.5+ removes context.rigid_nodes and visualizer.update_visual_states.
+    context = SimpleNamespace(
+        visualizer=SimpleNamespace(),
+        update=lambda **kwargs: fallback_calls.append(kwargs["force_render"]),
+    )
+    viewer = SimpleNamespace(
+        _pyrender_viewer=SimpleNamespace(render_lock=FreeLock(), update_on_sim_step=lambda: None),
+        context=context,
+        is_alive=lambda: True,
+    )
+    scene = SimpleNamespace(visualizer=SimpleNamespace(viewer=viewer))
+
+    assert update_scene_visualizer(scene, entities=(SimpleNamespace(),)) is True
+    assert fallback_calls == [True]

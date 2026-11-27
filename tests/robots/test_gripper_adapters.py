@@ -157,17 +157,16 @@ def test_lite6_runtime_config_and_drive_setup_match_calibrated_pneumatic_dynamic
     assert list(robot.control_dofs_force.call_args.args[1]) == [7]
 
 
-def test_bio_g2_adapter_mapping_and_sdk_contract():
+def _bio_g2_test_profile():
     from ufactory.config.models import GripperProfile
     from ufactory.grippers.bio_g2 import (
         BIO_GRIPPER_G2_CLOSED_GAP_M,
         BIO_GRIPPER_G2_OPEN_GAP_M,
         BIO_GRIPPER_G2_SIM_CLOSED_DRIVE,
         BIO_GRIPPER_G2_SIM_OPEN_DRIVE,
-        bio_gripper_g2_gap_m_to_sim_drive,
     )
 
-    profile = GripperProfile(
+    return GripperProfile(
         adapter="bio_g2",
         drive_joint="bio_gripper_g2_right_finger_joint",
         all_joint_names=("bio_gripper_g2_right_finger_joint", "bio_gripper_g2_left_finger_joint"),
@@ -184,30 +183,105 @@ def test_bio_g2_adapter_mapping_and_sdk_contract():
         frictionloss=0.0,
         real_command=True,
         feedback=True,
-        closed_loop=True,
+        closed_loop=False,
         allowed_contact_links=frozenset({"bio_gripper_g2_left_finger", "bio_gripper_g2_right_finger"}),
-        tool_tip_offset_z_m=0.128,
+        tool_tip_offset_z_m=0.0595,
         finger_pad_below_center_m=0.0,
         finger_close_descent_m=0.0,
-        grasp_table_clearance_m=0.01,
+        grasp_table_clearance_m=0.05,
         grasp_height_extra_m=0.0,
     )
+
+
+def test_bio_g2_adapter_mapping_and_sdk_contract():
+    from ufactory.grippers.adapters import BioG2Adapter
+    from ufactory.grippers.bio_g2 import bio_gripper_g2_gap_m_to_sim_drive
+
+    profile = _bio_g2_test_profile()
     adapter = create_gripper_adapter(profile)
+    assert isinstance(adapter, BioG2Adapter)
     arm = MagicMock()
     arm.get_bio_gripper_error.return_value = (0, 0)
     arm.set_bio_gripper_enable.return_value = 0
+    arm.get_bio_gripper_g2_position.return_value = (0, 150)
     arm.set_bio_gripper_g2_position.return_value = 0
     assert adapter.prepare_real(arm) == 0
+    arm.get_bio_gripper_g2_position.assert_called_once_with()
+
     for gap in (0.071, 0.08548, 0.110, 0.150):
         q = adapter.gap_to_drive(gap)
         assert q == pytest.approx(bio_gripper_g2_gap_m_to_sim_drive(gap), abs=1e-14)
         assert adapter.drive_to_gap(q) == pytest.approx(gap, abs=1e-12)
         assert adapter.send_real_gap(arm, gap) == 0
-        arm.set_bio_gripper_g2_position.assert_called_with(pos=gap * 1000.0, wait=False)
+        arm.set_bio_gripper_g2_position.assert_called_with(
+            pos=gap * 1000.0,
+            speed=2000,
+            force=50,
+            wait=False,
+            wait_motion=False,
+        )
+
+    # Deduplication skips sub-0.05 mm repeats; prepare_real resets deduplication state.
+    calls_before = arm.set_bio_gripper_g2_position.call_count
+    assert adapter.send_real_gap(arm, 0.15004) == 0
+    assert arm.set_bio_gripper_g2_position.call_count == calls_before
+    assert adapter.prepare_real(arm) == 0
+    assert adapter.send_real_gap(arm, 0.150) == 0
+    assert arm.set_bio_gripper_g2_position.call_count == calls_before + 1
+
+    # Non-zero error / enable / pre-read codes propagate cleanly.
+    arm.get_bio_gripper_error.return_value = (11, 0)
+    assert adapter.prepare_real(arm) == 11
+    arm.get_bio_gripper_error.return_value = (0, 0)
+    arm.set_bio_gripper_enable.return_value = 12
+    assert adapter.prepare_real(arm) == 12
+    arm.set_bio_gripper_enable.return_value = 0
+    arm.get_bio_gripper_g2_position.return_value = (13, 0)
+    assert adapter.prepare_real(arm) == 13
 
     arm.get_bio_gripper_error.return_value = (0, 3)
     with pytest.raises(RuntimeError, match="recover manually"):
         adapter.prepare_real(arm)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"speed_rpm": 499}, "speed_rpm"),
+        ({"speed_rpm": 4001}, "speed_rpm"),
+        ({"speed_rpm": float("nan")}, "speed_rpm"),
+        ({"speed_rpm": True}, "speed_rpm"),
+        ({"force_percent": 0}, "force_percent"),
+        ({"force_percent": 101}, "force_percent"),
+        ({"force_percent": float("inf")}, "force_percent"),
+        ({"force_percent": False}, "force_percent"),
+    ],
+)
+def test_bio_g2_adapter_rejects_out_of_range_parameters(kwargs, match):
+    from ufactory.grippers.adapters import BioG2Adapter
+
+    with pytest.raises(ValueError, match=match):
+        BioG2Adapter(_bio_g2_test_profile(), **kwargs)
+
+
+def test_bio_g2_tcp_in_flange_constant_matches_composed_urdf_fk():
+    pin = pytest.importorskip("pinocchio")
+    import numpy as np
+
+    from ufactory.grippers.bio_g2 import BIO_GRIPPER_G2_TCP_IN_FLANGE_M
+    from ufactory.robots.assembly import compose_robot_urdf
+
+    urdf = compose_robot_urdf("xarm6_1305", "bio_gripper_g2")
+    model = pin.buildModelFromUrdf(str(urdf))
+    data = model.createData()
+    q = pin.neutral(model)
+    pin.forwardKinematics(model, data, q)
+    pin.updateFramePlacements(model, data)
+    flange = data.oMf[model.getFrameId("link6")]
+    tcp = data.oMf[model.getFrameId("bio_gripper_g2_tcp_link")]
+    measured = flange.actInv(tcp).translation
+    err_mm = float(np.linalg.norm(measured - np.asarray(BIO_GRIPPER_G2_TCP_IN_FLANGE_M)) * 1000.0)
+    assert err_mm <= 0.05
 
 
 @pytest.mark.parametrize(("variant", "open_m"), [("robotiq_2f_85", 0.085), ("robotiq_2f_140", 0.140)])

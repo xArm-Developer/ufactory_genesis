@@ -12,6 +12,7 @@ from typing import Any, Callable, Sequence
 import numpy as np
 
 from ufactory.config import RepositoryAssetStore
+from ufactory.control import ArmMotionController
 from ufactory.grippers import create_gripper_adapter
 from ufactory.hardware import XArmTransport
 from ufactory.hardware.xarm import verify_controller_robot, wait_for_servo_motion_ready
@@ -19,9 +20,26 @@ from ufactory.kinematics import build_calibrated_urdf, load_kinematics_calibrati
 from ufactory.robots.assembly import resolve_robot_urdf
 from ufactory.kinematics.orientation import GRIPPER_DOWN_RPY_RAD
 from ufactory.kinematics.tcp_offset import pose_flange_to_tcp, read_tcp_offset
-from ufactory.safety.adapters import EnvironmentObstacle, PinocchioCollisionBackend, PinocchioKinematicsBackend
+from ufactory.safety.adapters import EnvironmentObstacle, PinocchioCollisionBackend
 from ufactory.safety.adapters.pinocchio import StageAwareObjectCollisionBackend
 from ufactory.safety.gate import sha256_file
+
+
+def build_arm_controller(
+    config: Any,
+    urdf: Path,
+    *,
+    tcp_offset: Sequence[float] | np.ndarray | None = None,
+) -> ArmMotionController:
+    """Construct the unified pure-NumPy ArmMotionController for runtime config + URDF."""
+
+    return ArmMotionController.from_robot(
+        config.robot.key,
+        urdf_path=urdf,
+        tcp_offset_mm_rpy=tcp_offset,
+        servo_rate_hz=float(config.motion.rate_hz),
+        allow_approx_motion=bool(getattr(config.motion, "allow_approx_motion", False)),
+    )
 
 
 def build_manipulation_backends(
@@ -35,13 +53,12 @@ def build_manipulation_backends(
     object_width_m: float,
     calibrated_g2: bool = False,
 ) -> tuple[Any, Any]:
-    passive = {config.gripper.drive_joint: config.gripper.open_drive} if config.gripper is not None else {}
-    kinematics = PinocchioKinematicsBackend(
-        urdf,
-        joint_names=config.robot.joint_names,
-        ee_link=config.robot.ee_link,
-        passive_joint_positions=passive,
+    passive = (
+        {config.gripper.drive_joint: config.gripper.open_drive}
+        if config.gripper is not None and config.gripper.drive_joint
+        else {}
     )
+    kinematics = build_arm_controller(config, urdf)
     collision: Any = StageAwareObjectCollisionBackend(
         PinocchioCollisionBackend(
             urdf,
@@ -131,8 +148,10 @@ def prepare_real_gripper_sender(
     arm: Any,
     transport: XArmTransport,
     gripper_config: Any,
+    *,
+    hardware_version: int = 1,
 ) -> tuple[list[float], Callable[[float], int] | None]:
-    gripper_adapter = create_gripper_adapter(gripper_config)
+    gripper_adapter = create_gripper_adapter(gripper_config, hardware_version=hardware_version)
     if gripper_adapter.capabilities.real_command:
         prepare_code = gripper_adapter.prepare_real(arm)
         if prepare_code != 0:
@@ -146,6 +165,22 @@ def prepare_real_gripper_sender(
 
     gripper_sender = send_gripper if gripper_adapter.capabilities.real_command else None
     return current_drive, gripper_sender
+
+
+def shutdown_real_gripper(
+    arm: Any,
+    gripper_config: Any,
+    *,
+    hardware_version: int = 1,
+) -> int:
+    """Safely release stateless real end effectors (e.g. pneumatic vacuum suction) on exit."""
+    if gripper_config is None or not bool(getattr(gripper_config, "real_command", False)):
+        return 0
+    adapter = create_gripper_adapter(gripper_config, hardware_version=hardware_version)
+    shutdown = getattr(adapter, "shutdown_real", None)
+    if callable(shutdown):
+        return int(shutdown(arm))
+    return 0
 
 
 def print_real_execution_summary(execution: Any) -> None:
@@ -166,7 +201,9 @@ def print_sdk_sim_failures(evidence: Any, evidence_path: Path | None) -> None:
 
     print(
         f"sdk_sim_failures={len(evidence.failures)} max_joint_error_rad={float(evidence.max_joint_error_rad):.6g} "
-        f"max_ee_error_m={float(evidence.max_ee_error_m):.6g}",
+        f"max_ee_error_m={float(evidence.max_ee_error_m):.6g} "
+        f"max_ee_rotation_error_rad={float(evidence.max_ee_rotation_error_rad):.6g} "
+        f"self_motion_allowed={bool(evidence.self_motion_allowed)}",
         file=sys.stderr,
     )
     for failure in evidence.failures:
@@ -306,13 +343,15 @@ def sdk_sim_feedback(
     expected_start_q: np.ndarray,
     *,
     tcp_offset: Sequence[float] | np.ndarray | None = None,
+    allow_approx_motion: bool | None = None,
 ) -> np.ndarray:
     """Replay against the controller's virtual robot from the approved start.
 
     The virtual preposition happens only after SDK simulation mode is enabled.
     This keeps ``sdk-sim`` independent of the physical arm pose and prevents a
     validation-only command from moving the real robot. The controller is
-    always returned to non-simulation mode, including on replay failures.
+    always returned to non-simulation mode (and its original
+    ``allow_approx_motion`` setting restored), including on replay failures.
 
     MoveL samples are flange poses; they are converted to the controller TCP
     frame with ``tcp_offset`` (read from the controller when omitted).
@@ -324,13 +363,29 @@ def sdk_sim_feedback(
     offset = read_tcp_offset(arm) if tcp_offset is None else np.asarray(tcp_offset, dtype=np.float64).reshape(-1)
     if offset.shape != (6,) or not np.all(np.isfinite(offset)):
         raise ValueError("tcp_offset must contain 6 finite values")
+    approx_flag = (
+        bool(getattr(getattr(config, "motion", None), "allow_approx_motion", False))
+        if allow_approx_motion is None
+        else bool(allow_approx_motion)
+    )
+    has_approx_api = callable(getattr(arm, "get_allow_approx_motion", None)) and callable(
+        getattr(arm, "set_allow_approx_motion", None)
+    )
+    if approx_flag and not has_approx_api:
+        raise RuntimeError("SDK simulation allow_approx_motion=True requires controller get/set_allow_approx_motion")
 
     def require_ok(label: str, code: int) -> None:
         if int(code) != 0:
             raise RuntimeError(f"SDK simulation {label} failed with code {code}")
 
     simulation_requested = bool(getattr(arm, "is_simulation_robot", False))
+    approx_prev: bool | None = None
+    approx_changed = False
     try:
+        if has_approx_api:
+            read_code, prev_val = arm.get_allow_approx_motion()
+            require_ok("get_allow_approx_motion", int(read_code))
+            approx_prev = bool(prev_val)
         if not simulation_requested:
             # The SDK deliberately suppresses motion_enable once its report
             # stream says simulation mode is active. Prepare readiness first,
@@ -345,6 +400,9 @@ def sdk_sim_feedback(
             time.sleep(0.05)
         if not bool(getattr(arm, "is_simulation_robot", False)):
             raise RuntimeError("SDK simulation mode was not confirmed by the controller report stream")
+        if has_approx_api:
+            require_ok("set_allow_approx_motion", arm.set_allow_approx_motion(approx_flag))
+            approx_changed = True
 
         require_ok("set_mode(position)", arm.set_mode(0))
         require_ok("set_state", arm.set_state(0))
@@ -366,7 +424,7 @@ def sdk_sim_feedback(
         require_ok("set_state", arm.set_state(0))
         wait_for_servo_motion_ready(arm)
         print(f"  [sdk-sim] virtual start reached max_err={start_error:.4f}rad; physical arm was not prepositioned")
-        print(f"  [sdk-sim] tcp_offset={offset.tolist()} (flange targets converted to TCP)")
+        print(f"  [sdk-sim] tcp_offset={offset.tolist()} allow_approx_motion={approx_flag} (flange targets -> TCP)")
         rows = [virtual_start]
         orientation = GRIPPER_DOWN_RPY_RAD
         dt = 1.0 / program.rate
@@ -382,14 +440,30 @@ def sdk_sim_feedback(
                 else:
                     code = 0
                 if int(code) != 0:
+                    err_warn: object = None
+                    state: object = None
+                    try:
+                        if callable(getattr(arm, "get_err_warn_code", None)):
+                            err_warn = arm.get_err_warn_code()
+                        if callable(getattr(arm, "get_state", None)):
+                            state = arm.get_state()
+                    except Exception:
+                        pass
                     arm.set_state(4)
-                    raise RuntimeError(f"SDK simulation command failed with code {code}")
+                    raise RuntimeError(
+                        f"SDK simulation command failed with code {code} "
+                        f"(segment={segment.label}, err_warn={err_warn}, state={state})"
+                    )
                 time.sleep(dt)
                 rows.append(read_q(arm, config.robot.dof))
         return np.stack(rows)
     finally:
+        cleanup_failures: list[str] = []
+        if approx_changed and approx_prev is not None:
+            restore_code = int(arm.set_allow_approx_motion(approx_prev))
+            if restore_code != 0:
+                cleanup_failures.append(f"restore allow_approx_motion={approx_prev} failed with code {restore_code}")
         if simulation_requested:
-            cleanup_failures: list[str] = []
             pause_code = int(arm.set_state(3))
             if pause_code != 0:
                 cleanup_failures.append(f"pause failed with code {pause_code}")
@@ -401,8 +475,8 @@ def sdk_sim_feedback(
                 time.sleep(0.05)
             if bool(getattr(arm, "is_simulation_robot", False)):
                 cleanup_failures.append("controller report still says simulation mode is active")
-            if cleanup_failures:
-                raise RuntimeError("SDK simulation cleanup failed: " + "; ".join(cleanup_failures))
+        if cleanup_failures:
+            raise RuntimeError("SDK simulation cleanup failed: " + "; ".join(cleanup_failures))
 
 
 def validate_robot_identity(arm: Any, config: Any, serial: str) -> None:
@@ -417,7 +491,12 @@ def print_summary(config: Any) -> None:
     print("configuration_sources:")
     for source in config.sources:
         print(f"  - {source}")
-    print(f"robot={config.robot.key} rate_hz={config.motion.rate_hz} z_min_m={config.safety.z_min_m}")
+    print(
+        f"robot={config.robot.key} rate_hz={config.motion.rate_hz} "
+        f"sim_rate_hz={config.simulation.rate_hz} "
+        f"allow_approx_motion={config.motion.allow_approx_motion} "
+        f"z_min_m={config.safety.z_min_m}"
+    )
     print(f"config_sha256={config.sha256}")
 
 
@@ -459,6 +538,8 @@ def print_preflight_complete(preflight: Any) -> None:
         f"collision_s={collision_s:.3f} total_s={total_s:.3f}",
         flush=True,
     )
+    for warning in getattr(preflight, "warnings", ()):
+        print(f"[preflight] warning: {warning}", flush=True)
 
 
 def print_preflight_violation_summary(preflight: Any, report_path: Path | None) -> None:

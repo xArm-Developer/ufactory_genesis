@@ -1,8 +1,9 @@
 """Host-side IK compilation for trajectory programs.
 
-The pick-place real ``servo_j`` path keeps the Cartesian waypoint program as
-the source of truth, then compiles each MoveL tick into an explicit joint
-target using the same Genesis link6 IK already used by sim and mirror replay.
+The pick-place / packaging ``servo_j`` path keeps the Cartesian waypoint program
+as the source of truth, then compiles each MoveL tick into an explicit joint
+target using the unified pure-NumPy :class:`~ufactory.control.ArmMotionController`
+(falling back to Genesis link6 IK only when no ``arm_controller`` is provided).
 
 After per-tick IK, the joint stream is plateau-collapsed and LSPB-retimed along
 the joint polyline so finite-difference ``servo_j`` acceleration stays within
@@ -12,9 +13,13 @@ near-duplicate IK solutions).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any
+
 import numpy as np
 
-from ufactory.kinematics.genesis import solve_link6_ik
+from ufactory.kinematics.orientation import GRIPPER_DOWN_QUAT_XYZW
 from ufactory.trajectory.profile import (
     _EPS,
     _lspb_alpha_for_duration,
@@ -30,6 +35,66 @@ _IK_JOINT_PLATEAU_EPS_RAD = 1e-6
 _DEFAULT_IK_DAMPING = 0.01
 _UF850_IK_DAMPING = 0.05
 _MAX_RETIME_SAMPLES = 1_000_000
+
+HOME_IK_POS_TOL_M = 1e-6
+HOME_IK_ROT_TOL_RAD = 1e-5
+HOME_IK_MAX_POS_ERR_M = 1e-5
+HOME_IK_MAX_ROT_ERR_RAD = 5e-3
+
+
+@dataclass(frozen=True)
+class ArmIKContext:
+    """Genesis-free context for compiling MoveL streams with ``ArmMotionController``."""
+
+    arm_controller: Any
+    robot_key: str
+    robot_urdf_path: str = ""
+    kinematics_yaml_path: str | None = None
+    kinematics_suffix: str | None = None
+    include_tcp: bool = False
+
+
+def solve_arm_home_q(
+    arm_controller: Any,
+    target_pos_base: Sequence[float] | np.ndarray,
+    *,
+    default_qpos_rad: Sequence[float] | np.ndarray | None = None,
+    include_tcp: bool = False,
+    pos_tol_m: float = HOME_IK_POS_TOL_M,
+    rot_tol_rad: float = HOME_IK_ROT_TOL_RAD,
+    max_pos_err_m: float = HOME_IK_MAX_POS_ERR_M,
+    max_rot_err_rad: float = HOME_IK_MAX_ROT_ERR_RAD,
+) -> np.ndarray:
+    """Solve a gripper-down home pose to micrometres using pure-NumPy ``ArmMotionController``."""
+    from ufactory.control.kinematics_chain import pose_to_se3
+    from ufactory.control.solvers import solve_exact_ik
+
+    base_xyz = np.asarray(target_pos_base, dtype=np.float64).reshape(3)
+    target_se3 = pose_to_se3(
+        np.concatenate((base_xyz, np.asarray(GRIPPER_DOWN_QUAT_XYZW, dtype=np.float64))),
+        position_in_mm=False,
+    )
+    seed_q = None if default_qpos_rad is None else np.asarray(default_qpos_rad, dtype=np.float64).reshape(-1)
+    effective_rot_tol = max_rot_err_rad if getattr(arm_controller, "dof", 6) == 5 else rot_tol_rad
+    res = solve_exact_ik(
+        arm_controller.chain,
+        target_se3,
+        seed_q_rad=seed_q,
+        include_tcp=bool(include_tcp),
+        pos_tol_m=float(pos_tol_m),
+        rot_tol_rad=float(effective_rot_tol),
+        cold_start_fallback=True,
+    )
+    if not (np.isfinite(res.position_error_m) and np.isfinite(res.orientation_error_rad)) or (
+        res.position_error_m > max_pos_err_m or res.orientation_error_rad > max_rot_err_rad
+    ):
+        raise ValueError(
+            f"ArmMotionController home IK residual {res.position_error_m * 1e3:.4f} mm / "
+            f"{res.orientation_error_rad * 1e3:.4f} mrad exceeds "
+            f"{max_pos_err_m * 1e3:.3f} mm / {max_rot_err_rad * 1e3:.3f} mrad "
+            f"for target {base_xyz.round(6).tolist()}"
+        )
+    return np.asarray(res.q_rad, dtype=np.float64).reshape(-1).copy()
 
 
 def compile_cartesian_program_to_joint_stream(program: Program, ctx) -> Program:
@@ -241,6 +306,30 @@ def _solve_base_xyz(
     init_qpos: np.ndarray | None,
     damping: float | None = None,
 ) -> np.ndarray:
+    controller = getattr(ctx, "arm_controller", None)
+    if controller is not None:
+        include_tcp = bool(getattr(ctx, "include_tcp", False))
+        xyz = np.asarray(xyz_base, dtype=np.float64).reshape(3)
+        pose = np.concatenate((xyz, np.asarray(GRIPPER_DOWN_QUAT_XYZW, dtype=np.float64)))
+        if init_qpos is None:
+            from ufactory.control.kinematics_chain import pose_to_se3
+            from ufactory.control.solvers import solve_exact_ik
+
+            res = solve_exact_ik(
+                controller.chain,
+                pose_to_se3(pose, position_in_mm=False),
+                include_tcp=include_tcp,
+                cold_start_fallback=True,
+            )
+            return np.asarray(res.q_rad, dtype=np.float64).reshape(-1)
+        res = controller.solve_step(
+            pose,
+            np.asarray(init_qpos, dtype=np.float64).reshape(-1),
+            include_tcp=include_tcp,
+        )
+        return np.asarray(res.q_rad, dtype=np.float64).reshape(-1)
+    from ufactory.kinematics.genesis import solve_link6_ik
+
     return solve_link6_ik(
         ctx.robot,
         ctx.ik_link,

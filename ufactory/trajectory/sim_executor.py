@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+import math
 import time
 
 import numpy as np
@@ -70,6 +71,45 @@ class SimReport:
     acceptance: dict = field(default_factory=dict)
     records: list[dict] = field(default_factory=list, repr=False)
     record_paths: dict = field(default_factory=dict)
+
+
+def physics_steps_for_tick(
+    sim_rate_hz: float,
+    control_rate_hz: float,
+    accumulator_s: float = 0.0,
+) -> tuple[int, float]:
+    """Return ``(physics_steps, next_accumulator_s)`` for one control tick.
+
+    When ``sim_rate_hz == control_rate_hz`` (default 50 Hz), returns ``(1, 0.0)``.
+    When Genesis runs at a higher rate (e.g. 100 Hz or 250 Hz with a 50 Hz servo
+    stream), executes matching sub-ticks so simulated time tracks command time.
+    """
+    sim_r = float(sim_rate_hz)
+    ctrl_r = float(control_rate_hz)
+    if not math.isfinite(sim_r) or sim_r <= 0.0:
+        raise ValueError("sim_rate_hz must be finite and positive")
+    if not math.isfinite(ctrl_r) or ctrl_r <= 0.0:
+        raise ValueError("control_rate_hz must be finite and positive")
+    if math.isclose(sim_r, ctrl_r, rel_tol=1e-9, abs_tol=1e-9):
+        return 1, 0.0
+    sim_dt = 1.0 / sim_r
+    total = float(accumulator_s) + (1.0 / ctrl_r)
+    steps = int(math.floor((total + 1e-12) / sim_dt))
+    remainder = max(0.0, total - steps * sim_dt)
+    if abs(remainder - sim_dt) <= 1e-12:
+        steps += 1
+        remainder = 0.0
+    return steps, remainder
+
+
+def _resolve_sim_rate_hz(ctx: TrajSceneContext, default_rate_hz: float) -> float:
+    sim_params = getattr(ctx, "simulation_parameters", None)
+    if isinstance(sim_params, dict) and sim_params.get("sim_rate_hz") is not None:
+        return float(sim_params["sim_rate_hz"])
+    sim_rate = getattr(ctx, "sim_rate_hz", None)
+    if sim_rate is not None and isinstance(sim_rate, (int, float)) and not isinstance(sim_rate, bool):
+        return float(sim_rate)
+    return float(default_rate_hz)
 
 
 def replay_sim(
@@ -148,6 +188,8 @@ def replay_sim(
     gripper_buffer_width = max(len(grip_control_idx), len(all_opening_grip_control_idx))
     opening_only_grip_idx = [idx for idx in all_opening_grip_control_idx if idx not in grip_control_idx]
     rate = float(program.rate)
+    sim_rate_hz = _resolve_sim_rate_hz(ctx, rate)
+    sim_time_acc = 0.0
     if not np.isfinite(final_metric_settle_s) or final_metric_settle_s < 0.0:
         raise ValueError("final_metric_settle_s must be finite and non-negative")
     report = SimReport(total_duration=program.total_duration, total_ticks=program.total_ticks)
@@ -252,6 +294,7 @@ def replay_sim(
                     current_grip_drive = float(drive_start + alpha * (final_target_drive - drive_start))
                 elif not is_holding_gap:
                     current_grip_drive = contact_hold_drive if contact_hold_drive is not None else planned_grip_drive
+                n_phys, sim_time_acc = physics_steps_for_tick(sim_rate_hz, rate, sim_time_acc)
                 _step(
                     robot,
                     scene,
@@ -261,6 +304,7 @@ def replay_sim(
                     grip_drive=current_grip_drive,
                     grip_targets=grip_targets,
                     buffers=buffers,
+                    physics_steps=n_phys,
                 )
                 _assert_finite_replay_state(ctx, phase=status.label, tick=t)
                 if on_tick is not None:
@@ -297,7 +341,7 @@ def replay_sim(
             for t in range(n):
                 ik_started = time.perf_counter_ns()
                 try:
-                    q_arm = resolve_tick_arm_q(ctx, seg, samples, t, init_qpos=last_q_arm)
+                    q_arm = resolve_tick_arm_q(ctx, seg, samples, t, init_qpos=last_q_arm, dt_s=1.0 / rate)
                 except Exception:
                     status.ik_failures += 1
                     raise
@@ -305,6 +349,7 @@ def replay_sim(
                     if seg.kind == "movel":
                         status.ik_duration_ms += (time.perf_counter_ns() - ik_started) / 1e6
                 last_q_arm = q_arm
+                n_phys, sim_time_acc = physics_steps_for_tick(sim_rate_hz, rate, sim_time_acc)
                 _step(
                     robot,
                     scene,
@@ -313,6 +358,7 @@ def replay_sim(
                     q_arm,
                     grip_drive=current_grip_drive,
                     buffers=buffers,
+                    physics_steps=n_phys,
                 )
                 _assert_finite_replay_state(ctx, phase=status.label, tick=t)
                 if on_tick is not None:
@@ -339,7 +385,9 @@ def replay_sim(
     # settle.  Bare steps retain Genesis' latched arm/gripper control targets.
     report.metric_settle_ticks = int(np.ceil(float(final_metric_settle_s) * rate))
     for settle_tick in range(report.metric_settle_ticks):
-        scene.step()
+        n_phys, sim_time_acc = physics_steps_for_tick(sim_rate_hz, rate, sim_time_acc)
+        for _ in range(n_phys):
+            scene.step()
         _assert_finite_replay_state(ctx, phase="final-settle", tick=settle_tick)
 
     # Final metrics: place error + home drift, both against the complete
@@ -409,6 +457,7 @@ def _step(
     *,
     buffers: _TensorBuffers,
     grip_targets: np.ndarray | None = None,
+    physics_steps: int = 1,
 ):
     """Send one PD control tick and step the scene."""
     if q_arm_target is not None:
@@ -424,7 +473,8 @@ def _step(
         np.copyto(buffers.gripper_numpy[0, :width], np.asarray(grip_targets, dtype=buffers.gripper_numpy.dtype))
         buffers.gripper.copy_(buffers.gripper_cpu, non_blocking=True)
     robot.control_dofs_position(buffers.gripper[:, : len(grip_control_idx)], grip_control_idx)
-    scene.step()
+    for _ in range(int(physics_steps)):
+        scene.step()
 
 
 def _current_drive(robot, grip_idx) -> float:

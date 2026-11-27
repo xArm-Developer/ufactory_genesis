@@ -91,7 +91,7 @@ def test_lite6_movable_gripper_assembly_matches_standalone_part() -> None:
     standalone_path = Path(lite6_gripper_movable_visual_urdf())
 
     assert combo_path.name.startswith("lite6__lite6_gripper__glb.")
-    finger_mesh_dir = PROJECT_ROOT / "assets" / "urdf" / "lite6_gripper" / "meshes" / "collision"
+    finger_mesh_dir = PROJECT_ROOT / "assets" / "urdf" / "end_effectors" / "lite6_gripper" / "meshes" / "collision"
 
     for path in (combo_path, standalone_path):
         root = ET.parse(path).getroot()

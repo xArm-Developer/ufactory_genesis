@@ -1,0 +1,33 @@
+schema_version: 1
+robot:
+  urdf: assembly:bio_gripper_g2
+task:
+  parameters:
+    fixed_object_position_m: [0.38, -0.12, 0.015]
+    fixed_target_position_m: [0.38, 0.12, 0.015]
+    default_ee_position_m: [0.38, -0.12, 0.30]
+gripper:
+  adapter: bio_g2
+  drive_joint: bio_gripper_g2_right_finger_joint
+  all_joint_names: [bio_gripper_g2_right_finger_joint, bio_gripper_g2_left_finger_joint]
+  finger_link_names: [bio_gripper_g2_left_finger, bio_gripper_g2_right_finger]
+  open_drive: 0.0395
+  closed_drive: 0.0
+  open_gap_m: 0.150
+  closed_gap_m: 0.071
+  kp: 16000.0
+  kv: 40.0
+  force_lower_n: -20.0
+  force_upper_n: 20.0
+  damping: 0.1
+  frictionloss: 0.0
+  real_command: true
+  feedback: true
+  closed_loop: false
+  allowed_contact_links: [bio_gripper_g2_left_finger, bio_gripper_g2_right_finger]
+  tool_tip_offset_z_m: 0.0595
+  finger_pad_below_center_m: 0.0
+  finger_close_descent_m: 0.0
+  grasp_table_clearance_m: 0.100
+  grasp_height_extra_m: 0.0
+  tcp_offset: [157.64, 0.0, 59.5, 0.0, 0.0, 0.0]

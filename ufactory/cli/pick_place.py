@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 from dataclasses import asdict
 import hashlib
 import json
@@ -19,6 +20,7 @@ from ufactory.config import (
     resolve_pick_place_object_spec,
 )
 from ufactory.manipulation.commands import (
+    build_arm_controller,
     build_manipulation_backends,
     model_and_hashes as _model_and_hashes,
     paced_start_hold as _paced_start_hold,
@@ -26,6 +28,7 @@ from ufactory.manipulation.commands import (
     prime_first_movej_sample,
     print_real_execution_summary,
     print_sdk_sim_failures,
+    shutdown_real_gripper,
     write_json as _write_json,
     connect as _connect,
     read_q as _read_q,
@@ -39,7 +42,10 @@ from ufactory.manipulation.commands import (
     print_preflight_complete as _print_preflight_complete,
     print_preflight_violation_summary as _print_preflight_violation_summary,
 )
+from ufactory.grippers.bio_g2 import bio_g2_controller_mode_error
 from ufactory.grippers.robotiq import robotiq_controller_mode_error
+from ufactory.grippers.vacuum import vacuum_controller_mode_error
+from ufactory.manipulation.tcp import check_controller_tcp_offset, resolve_tool_tcp_spec
 from ufactory.hardware import XArmTransport
 from ufactory.kinematics import get_robot_sn, read_tcp_offset
 from ufactory.kinematics.orientation import GRIPPER_DOWN_QUAT_XYZW
@@ -49,7 +55,11 @@ from ufactory.safety.gate import program_sha256, sha256_file
 from ufactory.simulation import GenesisRuntimeManager, override_simulation_backend
 from ufactory.simulation.compat import require_genesis_capabilities
 from ufactory.trajectory.execution import ExecutionBindings, execute_real, execute_sim
-from ufactory.trajectory.ik import compile_cartesian_program_to_joint_stream
+from ufactory.trajectory.ik import (
+    ArmIKContext,
+    compile_cartesian_program_to_joint_stream,
+    solve_arm_home_q,
+)
 from ufactory.trajectory.planner import (
     CartesianWaypoint,
     JointWaypoint,
@@ -102,29 +112,32 @@ def _backends(config: Any, urdf: Path, *, calibrated_g2: bool = False) -> tuple[
 def _build_program(config: Any, kinematics: Any | None = None, *, q_home: np.ndarray | None = None) -> Any:
     """Build the v0.2.4-style pick-place program starting at Cartesian home.
 
-    ``start_xyz`` is always ``[obj_x, obj_y, home_z]`` (not FK of default_qpos).
-    When ``q_home`` is provided (Genesis home IK), a zero-length MoveJ seed is
-    prepended for ``servo_j`` compilation/preposition. Otherwise, if
-    ``kinematics`` is provided, Pinocchio IK seeds a MoveJ at home for
-    ``servo_cartesian`` preflight.
+    ``start_xyz`` is always the flange position above the pick point at ``home_z``
+    (not FK of ``default_qpos``). Task pick/place coordinates are expressed in
+    TCP space and converted to flange (``link6``) waypoints via
+    :func:`~ufactory.manipulation.tcp.resolve_tool_tcp_spec`.
+    When ``q_home`` is provided, a zero-length MoveJ seed is prepended for
+    ``servo_j`` compilation/preposition. Otherwise, if ``kinematics`` is
+    provided, exact IK seeds a MoveJ at home for ``servo_cartesian`` preflight.
     """
 
     params = config.task.parameters
     object_pos = np.asarray(params["fixed_object_position_m"], dtype=np.float64)
     target_pos = np.asarray(params["fixed_target_position_m"], dtype=np.float64)
-    from ufactory.trajectory.scene import dry_heights
-
-    gripper_name = config.gripper.adapter if config.gripper is not None else None
-    heights = dry_heights(config.robot.key, gripper=gripper_name)
+    tool_tcp = resolve_tool_tcp_spec(config)
+    grasp_tcp_z = tool_tcp.grasp_tcp_z_m
+    grasp_flange = tool_tcp.tcp_to_flange_xyz([float(object_pos[0]), float(object_pos[1]), grasp_tcp_z])
+    place_flange = tool_tcp.tcp_to_flange_xyz([float(target_pos[0]), float(target_pos[1]), grasp_tcp_z])
     is_lite6 = str(getattr(config.gripper, "adapter", "")) == "lite6"
-    obj_x, obj_y = float(object_pos[0]), float(object_pos[1])
-    place_x, place_y = float(target_pos[0]), float(target_pos[1])
-    grasp_z = float(heights.grasp_link6_z)
-    pre_grasp_z = float(heights.pre_grasp_link6_z)
-    lift_z = float(heights.lift_link6_z)
-    home_z = float(heights.home_pos_base[2])
+    obj_x, obj_y = float(grasp_flange[0]), float(grasp_flange[1])
+    place_x, place_y = float(place_flange[0]), float(place_flange[1])
+    grasp_z = float(grasp_flange[2])
+    pre_grasp_z = grasp_z + 0.10
+    default_ee_z = float(params["default_ee_position_m"][2])
+    lift_z = default_ee_z
+    home_z = default_ee_z
     open_gap = float(config.gripper.open_gap_m)
-    close_gap = LITE6_DEFAULT_GRIPPER_GRASP_GAP_M if is_lite6 else DEFAULT_GRIPPER_GRASP_GAP_M
+    close_gap = _close_gap_m(config)
     gripper_duration_s = LITE6_GRIPPER_DURATION_S if is_lite6 else float(config.motion.gripper_duration_s)
 
     pre_grasp = [obj_x, obj_y, pre_grasp_z]
@@ -222,16 +235,12 @@ def _build_program(config: Any, kinematics: Any | None = None, *, q_home: np.nda
 
 
 def _home_xyz_m(config: Any) -> np.ndarray:
-    from ufactory.trajectory.scene import dry_heights
-
     params = config.task.parameters
     object_pos = np.asarray(params["fixed_object_position_m"], dtype=np.float64)
-    gripper_name = config.gripper.adapter if config.gripper is not None else None
-    heights = dry_heights(config.robot.key, gripper=gripper_name)
-    return np.asarray(
-        [float(object_pos[0]), float(object_pos[1]), float(heights.home_pos_base[2])],
-        dtype=np.float64,
-    )
+    tool_tcp = resolve_tool_tcp_spec(config)
+    flange_xy = tool_tcp.tcp_to_flange_xyz([float(object_pos[0]), float(object_pos[1]), 0.0])[:2]
+    home_z = float(params["default_ee_position_m"][2])
+    return np.asarray([float(flange_xy[0]), float(flange_xy[1]), home_z], dtype=np.float64)
 
 
 def _arm_q_from_scene(ctx: Any) -> np.ndarray:
@@ -241,14 +250,22 @@ def _arm_q_from_scene(ctx: Any) -> np.ndarray:
 
 
 def _build_ik_scene(
-    config: Any, *, calibration: Path | None, show_viewer: bool = False, calibrated_g2: bool = False
+    config: Any,
+    *,
+    calibration: Path | None,
+    show_viewer: bool = False,
+    calibrated_g2: bool = False,
+    arm_controller: Any | None = None,
 ) -> Any:
     from ufactory.trajectory.scene import build_scene
 
     gripper_name = config.gripper.adapter if config.gripper is not None else None
+    tool_tcp = resolve_tool_tcp_spec(config)
+    has_xy_offset = any(abs(v) > 1e-9 for v in tool_tcp.tcp_offset_flange_m[:2])
+    home_xy_base = tuple(float(v) for v in _home_xyz_m(config)[:2]) if has_xy_offset else None
     return build_scene(
         robot_key=config.robot.key,
-        rate=config.motion.rate_hz,
+        rate=config.simulation.rate_hz,
         show_viewer=show_viewer,
         substeps=config.simulation.substeps,
         constraint_solver=config.simulation.constraint_solver,
@@ -264,8 +281,17 @@ def _build_ik_scene(
         robotiq_settings=config.simulation.robotiq,
         gripper=gripper_name,
         excluded_geometry_pairs=config.gripper.excluded_geometry_pairs if config.gripper is not None else (),
+        arm_controller=arm_controller,
+        home_xy_base=home_xy_base,
         **_scene_layout_kwargs(config),
     )
+
+
+def _mirror_attach_dist_m(config: Any) -> float | None:
+    """Return mirror carry latch distance override, disabling carry for empty Bio G2 / vacuum runs."""
+    if str(getattr(config.gripper, "adapter", "")) in {"bio_g2", "vacuum_gripper"}:
+        return 0.0
+    return None
 
 
 def _open_sim_viewer(ctx: Any, *, warmup_steps: int = 3) -> None:
@@ -279,15 +305,48 @@ def _open_sim_viewer(ctx: Any, *, warmup_steps: int = 3) -> None:
     start_deferred_viewer(scene)
 
 
+def _compile_servo_j_offline(
+    config: Any,
+    *,
+    kinematics: Any,
+    urdf: Path,
+    calibration: Path | None = None,
+    serial: str | None = None,
+) -> tuple[Any, np.ndarray]:
+    """Compile the Cartesian pick-place program to a joint stream without starting Genesis."""
+
+    q_home = solve_arm_home_q(
+        kinematics,
+        _home_xyz_m(config),
+        default_qpos_rad=config.arm.default_qpos_rad,
+    )
+    seeded = _build_program(config, q_home=q_home)
+    ik_ctx = ArmIKContext(
+        arm_controller=kinematics,
+        robot_key=config.robot.key,
+        robot_urdf_path=str(urdf),
+        kinematics_yaml_path=str(calibration) if calibration is not None else None,
+        kinematics_suffix=serial,
+    )
+    compiled = compile_cartesian_program_to_joint_stream(seeded, ik_ctx)
+    return compiled, q_home
+
+
 def _compile_servo_j_program(
     config: Any,
     *,
     calibration: Path | None,
     show_viewer: bool = False,
+    arm_controller: Any | None = None,
 ) -> tuple[Any, Any, np.ndarray]:
-    """Build Cartesian program, Genesis-compile with down_quat, return (program, ctx, q_home)."""
+    """Build Cartesian program, compile with down_quat, return (program, ctx, q_home)."""
 
-    ctx = _build_ik_scene(config, calibration=calibration, show_viewer=show_viewer)
+    ctx = _build_ik_scene(
+        config,
+        calibration=calibration,
+        show_viewer=show_viewer,
+        arm_controller=arm_controller,
+    )
     q_home = _arm_q_from_scene(ctx)
     seeded = _build_program(config, q_home=q_home)
     compiled = compile_cartesian_program_to_joint_stream(seeded, ctx)
@@ -296,7 +355,12 @@ def _compile_servo_j_program(
 
 def _close_gap_m(config: Any) -> float:
     adapter = str(getattr(config.gripper, "adapter", ""))
-    return LITE6_DEFAULT_GRIPPER_GRASP_GAP_M if adapter == "lite6" else DEFAULT_GRIPPER_GRASP_GAP_M
+    if adapter == "lite6":
+        return LITE6_DEFAULT_GRIPPER_GRASP_GAP_M
+    if adapter == "vacuum_gripper":
+        return float(getattr(config.gripper, "closed_gap_m", 0.0))
+    closed_gap = float(getattr(config.gripper, "closed_gap_m", 0.0))
+    return max(DEFAULT_GRIPPER_GRASP_GAP_M, closed_gap)
 
 
 def _scene_layout_kwargs(config: Any) -> dict[str, Any]:
@@ -364,9 +428,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--robot", required=True, choices=("xarm5", "xarm6", "xarm7", "uf850", "lite6"))
     parser.add_argument(
         "--gripper",
-        choices=("default", "g2", "bio_gripper_g2", "lite6", "robotiq_2f_85", "robotiq_2f_140"),
+        choices=("default", "g2", "bio_gripper_g2", "lite6", "robotiq_2f_85", "robotiq_2f_140", "vacuum_gripper"),
         default="default",
-        help="Select end-effector variant (bio_gripper_g2, robotiq_2f_85, robotiq_2f_140 support xarm5/6/7 and uf850)",
+        help="Select end-effector variant (bio_gripper_g2, robotiq_2f_85, robotiq_2f_140, vacuum_gripper support xarm5/6/7 and uf850)",
+    )
+    parser.add_argument(
+        "--vacuum-hardware-version",
+        type=int,
+        choices=(1, 2),
+        default=1,
+        help="Vacuum gripper hardware version (1: plug-in TGPIO 0/1, 2: contact TGPIO 3/4)",
     )
     parser.add_argument("--mode", required=True, choices=("sim", "dry-run", "sdk-sim", "real"))
     parser.add_argument("--executor", choices=("servo_j", "servo_cartesian"))
@@ -391,6 +462,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--substeps", type=int, choices=(8, 32))
     parser.add_argument("--force-percent", type=float)
     parser.add_argument(
+        "--allow-approx-motion",
+        action="store_true",
+        help="Enable firmware-aligned DLS singularity avoidance (mirrors set_allow_approx_motion(True))",
+    )
+    parser.add_argument(
+        "--sim-rate-hz",
+        type=float,
+        default=None,
+        help="Override Genesis physics simulation step rate in Hz (default: 50.0)",
+    )
+    parser.add_argument(
         "--visual",
         action="store_true",
         help="Sim: force Genesis viewer; real: open kinematic mirror viewer (async, off servo path)",
@@ -411,66 +493,91 @@ def main(argv: Sequence[str] | None = None) -> int:
     if robotiq_error is not None:
         parser.error(robotiq_error)
 
+    bio_error = bio_g2_controller_mode_error("pick_place", args.robot, args.gripper, args.mode)
+    if bio_error is not None:
+        parser.error(bio_error)
+
+    vacuum_error = vacuum_controller_mode_error("pick_place", args.robot, args.gripper, args.mode)
+    if vacuum_error is not None:
+        parser.error(vacuum_error)
+
     if args.gripper == "bio_gripper_g2":
         if args.robot not in {"xarm5", "xarm6", "xarm7", "uf850"}:
             parser.error("--gripper bio_gripper_g2 requires --robot xarm5, xarm6, xarm7 or uf850")
-        if args.mode != "sim":
-            parser.error("--gripper bio_gripper_g2 currently requires --mode sim")
-        if args.speed_mm_s is not None and args.speed_percent is not None:
-            parser.error("Provide at most one of --speed-mm-s or --speed-percent")
-        from ufactory.simulation.bio_g2_model import (
-            MAX_SPEED_MM_S,
-            MIN_SPEED_MM_S,
-            bio_g2_speed_mm_s_from_percent,
-            bounded,
-            finger_force_n,
-        )
-        from ufactory.trajectory.bio_g2_replay import (
-            DEFAULT_PICK_PLACE_SPEED_MM_S,
-            DEFAULT_SUBSTEPS,
-            DEFAULT_TRANSPORT_SPEED_MM_S,
-            run_bio_g2_pick_place,
-        )
-
-        try:
-            if args.speed_mm_s is not None:
-                speed_mm_s = bounded(args.speed_mm_s, MIN_SPEED_MM_S, MAX_SPEED_MM_S, "speed_mm_s")
-            elif args.speed_percent is not None:
-                if args.speed_percent <= 0:
-                    raise ValueError("automatic Bio Gripper G2 manipulation requires --speed-percent > 0")
-                speed_mm_s = bio_g2_speed_mm_s_from_percent(args.speed_percent)
-            else:
-                speed_mm_s = DEFAULT_PICK_PLACE_SPEED_MM_S
-            force_percent = 50.0 if args.force_percent is None else float(args.force_percent)
-            finger_force_n(force_percent)
-            transport_speed_mm_s = (
-                DEFAULT_TRANSPORT_SPEED_MM_S if args.transport_speed_mm_s is None else float(args.transport_speed_mm_s)
+        if args.mode == "sim":
+            if args.speed_mm_s is not None and args.speed_percent is not None:
+                parser.error("Provide at most one of --speed-mm-s or --speed-percent")
+            from ufactory.simulation.bio_g2_model import (
+                MAX_SPEED_MM_S,
+                MIN_SPEED_MM_S,
+                bio_g2_speed_mm_s_from_percent,
+                bounded,
+                finger_force_n,
             )
-            if not np.isfinite(transport_speed_mm_s) or transport_speed_mm_s <= 0:
-                raise ValueError("transport_speed_mm_s must be finite and positive")
-        except ValueError as exc:
-            parser.error(str(exc))
-
-        summary = run_bio_g2_pick_place(
-            robot=args.robot,
-            backend=args.backend or "gpu",
-            headless=not bool(args.visual),
-            executor=args.executor or "servo_cartesian",
-            speed_mm_s=speed_mm_s,
-            transport_speed_mm_s=transport_speed_mm_s,
-            substeps=DEFAULT_SUBSTEPS if args.substeps is None else int(args.substeps),
-            force_percent=force_percent,
-            csv_path=args.csv,
-            summary_path=args.sim_report or args.report,
-        )
-        metrics = summary["metrics"]
-        if "place_xy_error_mm" in metrics and "home_return_error_mm" in metrics:
-            print(
-                f"place_error_mm={metrics['place_xy_error_mm']:.3f} "
-                f"home_drift_mm={metrics['home_return_error_mm']:.3f} "
-                f"completed={summary['passed']}"
+            from ufactory.trajectory.bio_g2_replay import (
+                DEFAULT_PICK_PLACE_SPEED_MM_S,
+                DEFAULT_SUBSTEPS,
+                DEFAULT_TRANSPORT_SPEED_MM_S,
+                run_bio_g2_pick_place,
             )
-        return 0 if summary["passed"] else 1
+
+            try:
+                if args.speed_mm_s is not None:
+                    speed_mm_s = bounded(args.speed_mm_s, MIN_SPEED_MM_S, MAX_SPEED_MM_S, "speed_mm_s")
+                elif args.speed_percent is not None:
+                    if args.speed_percent <= 0:
+                        raise ValueError("automatic Bio Gripper G2 manipulation requires --speed-percent > 0")
+                    speed_mm_s = bio_g2_speed_mm_s_from_percent(args.speed_percent)
+                else:
+                    speed_mm_s = DEFAULT_PICK_PLACE_SPEED_MM_S
+                force_percent = 50.0 if args.force_percent is None else float(args.force_percent)
+                finger_force_n(force_percent)
+                transport_speed_mm_s = (
+                    DEFAULT_TRANSPORT_SPEED_MM_S
+                    if args.transport_speed_mm_s is None
+                    else float(args.transport_speed_mm_s)
+                )
+                if not np.isfinite(transport_speed_mm_s) or transport_speed_mm_s <= 0:
+                    raise ValueError("transport_speed_mm_s must be finite and positive")
+            except ValueError as exc:
+                parser.error(str(exc))
+
+            summary = run_bio_g2_pick_place(
+                robot=args.robot,
+                backend=args.backend or "gpu",
+                headless=not bool(args.visual),
+                executor=args.executor or "servo_cartesian",
+                speed_mm_s=speed_mm_s,
+                transport_speed_mm_s=transport_speed_mm_s,
+                substeps=DEFAULT_SUBSTEPS if args.substeps is None else int(args.substeps),
+                force_percent=force_percent,
+                csv_path=args.csv,
+                summary_path=args.sim_report or args.report,
+            )
+            metrics = summary["metrics"]
+            if "place_xy_error_mm" in metrics and "home_return_error_mm" in metrics:
+                print(
+                    f"place_error_mm={metrics['place_xy_error_mm']:.3f} "
+                    f"home_drift_mm={metrics['home_return_error_mm']:.3f} "
+                    f"completed={summary['passed']}"
+                )
+            return 0 if summary["passed"] else 1
+        if (
+            any(
+                getattr(args, name) is not None
+                for name in (
+                    "position_mm",
+                    "speed_percent",
+                    "force_percent",
+                    "speed_mm_s",
+                    "transport_speed_mm_s",
+                    "substeps",
+                )
+            )
+            or args.csv
+            or args.sim_report
+        ):
+            parser.error("Bio Gripper G2 simulation speed/force/record flags require --mode sim")
 
     if args.executor is None:
         parser.error("--executor is required for this gripper")
@@ -482,13 +589,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     if args.mode != "sim" and (gripper_overrides or args.csv or args.sim_report):
         parser.error("percentage commands and execution records require --mode sim")
+    cli_overrides: dict[str, Any] = dict(gripper_overrides)
+    if args.allow_approx_motion:
+        cli_overrides["motion.allow_approx_motion"] = True
+    if args.sim_rate_hz is not None:
+        cli_overrides["simulation.rate_hz"] = args.sim_rate_hz
     selected_gripper = None if args.gripper == "default" else args.gripper
     try:
         config = load_runtime_config(
             args.robot,
             gripper=selected_gripper,
             config_path=args.config,
-            overrides=gripper_overrides,
+            overrides=cli_overrides,
         )
     except ValueError as exc:
         parser.error(str(exc))
@@ -505,7 +617,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.print_config:
         print(dump_runtime_config(config), end="")
         return 0
-    if args.executor == "servo_j" or args.mode == "sim" or args.visual:
+    if args.mode == "sim" or args.visual:
         require_genesis_capabilities(
             pbr=True,
             deferred_viewer=bool(args.visual) or bool(config.simulation.show_viewer),
@@ -528,6 +640,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     try:
         urdf, urdf_hash, calibration_hash = _model_and_hashes(config, args.calibration, serial)
+        arm_controller = build_arm_controller(config, urdf) if urdf.is_file() else None
         ik_ctx = None
         q_home: np.ndarray | None = None
         genesis_for_ik = None
@@ -537,10 +650,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
                 genesis_for_ik = GenesisRuntimeManager(config.simulation)
                 genesis_for_ik.__enter__()
-                ik_ctx = _build_ik_scene(config, calibration=args.calibration, calibrated_g2=True)
+                ik_ctx = _build_ik_scene(
+                    config,
+                    calibration=args.calibration,
+                    calibrated_g2=True,
+                    arm_controller=arm_controller,
+                )
                 urdf = Path(ik_ctx.robot_urdf_path)
                 urdf_hash = sha256_file(urdf)
                 kinematics, collision = _backends(config, urdf, calibrated_g2=True)
+                ik_ctx.arm_controller = kinematics
                 q_home = _arm_q_from_scene(ik_ctx)
                 program = _build_program(config, q_home=q_home)
                 if config.gripper.adapter == "g2":
@@ -552,16 +671,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             elif args.executor == "servo_j":
                 kinematics, collision = _backends(config, urdf)
                 print(
-                    "[ik-compile] building Genesis scene and compiling servo_j trajectory...",
+                    "[ik-compile] compiling servo_j trajectory with ArmMotionController...",
                     flush=True,
                 )
                 ik_started = time.perf_counter()
-                genesis_for_ik = GenesisRuntimeManager(config.simulation)
-                genesis_for_ik.__enter__()
-                program, ik_ctx, q_home = _compile_servo_j_program(
+                program, q_home = _compile_servo_j_offline(
                     config,
+                    kinematics=kinematics,
+                    urdf=urdf,
                     calibration=args.calibration,
-                    show_viewer=False,
+                    serial=serial,
                 )
                 _print_ik_compile_complete(program, elapsed_s=time.perf_counter() - ik_started)
             else:
@@ -631,6 +750,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             # Read once so SDK simulation and real execution share the same TCP conversion.
             tcp_offset = read_tcp_offset(arm)
             print(f"[hardware] controller tcp_offset={tcp_offset.tolist()} (xyz mm, rpy rad)", flush=True)
+            check_controller_tcp_offset(
+                tcp_offset,
+                resolve_tool_tcp_spec(config).tcp_offset_mm_deg,
+                mode=args.mode,
+            )
             transport = XArmTransport(arm, robot_key=config.robot.key, serial_number=serial, tcp_offset=tcp_offset)
             shadow = None
             stages = None
@@ -661,7 +785,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.executor == "servo_cartesian" or args.mode == "sdk-sim":
                 if shadow is None or stages is None:
                     shadow, stages = gate.shadow_joint_stream(program)
-                firmware = _sdk_sim_feedback(arm, program, config, start_q, tcp_offset=tcp_offset)
+                firmware = _sdk_sim_feedback(
+                    arm,
+                    program,
+                    config,
+                    start_q,
+                    tcp_offset=tcp_offset,
+                    allow_approx_motion=config.motion.allow_approx_motion,
+                )
                 evidence = validate_sdk_simulation(
                     robot_key=config.robot.key,
                     serial_number=serial,
@@ -674,6 +805,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     kinematics=kinematics,
                     collision=collision,
                     allowed_collision=gate.collision_allowed,
+                    joint_lower_rad=gate.joint_lower_rad,
+                    joint_upper_rad=gate.joint_upper_rad,
                 )
                 evidence_path = args.report or Path("reports") / f"sdk_sim_{config.robot.key}.json"
                 _write_json(evidence_path, asdict(evidence))
@@ -716,26 +849,39 @@ def main(argv: Sequence[str] | None = None) -> int:
                         if genesis_for_ik is None:
                             genesis_for_ik = GenesisRuntimeManager(config.simulation)
                             genesis_for_ik.__enter__()
-                        mirror_ctx = _build_ik_scene(config, calibration=args.calibration, show_viewer=False)
+                        mirror_ctx = _build_ik_scene(
+                            config,
+                            calibration=args.calibration,
+                            show_viewer=False,
+                            arm_controller=kinematics,
+                        )
+                    attach_dist_m = _mirror_attach_dist_m(config)
+                    carry_note = (
+                        "empty grasp; cube not carried"
+                        if attach_dist_m == 0.0
+                        else "cube kinematically carried while gripped"
+                    )
                     base_mm = [v * 1000.0 for v in mirror_ctx.base_pos_world]
                     print(
                         f"\n[mirror] robot={mirror_ctx.robot_key} gripper={mirror_ctx.gripper.family} "
                         f"rate={config.motion.rate_hz}Hz visual_model={mirror_ctx.visual_model} "
                         f"base=[{base_mm[0]:.0f},{base_mm[1]:.0f},{base_mm[2]:.0f}]mm "
-                        f"kinematic open-loop; cube kinematically carried while gripped "
+                        f"kinematic open-loop; {carry_note} "
                         f"(no contact physics; async mirror off servo critical path)"
                     )
                     mirror = TrajKinematicMirror(mirror_ctx, approved.program)
                     mirror.prime_to_home()
                     start_deferred_viewer(mirror_ctx.scene, kinematic_mirror=True)
                     _hold_mirror_at_program_start(mirror, hold_s=args.visual_start_hold_s)
-                    tracker = KinematicCarryTracker(
-                        mirror,
-                        grasp_gap_m=_close_gap_m(config),
-                        grasp_segment_label="grip",
-                        release_segment_label="release",
-                        approach_freeze_labels=("descend",),
-                    )
+                    tracker_kwargs: dict[str, Any] = {
+                        "grasp_gap_m": _close_gap_m(config),
+                        "grasp_segment_label": "grip",
+                        "release_segment_label": "release",
+                        "approach_freeze_labels": ("descend",),
+                    }
+                    if attach_dist_m is not None:
+                        tracker_kwargs["attach_dist_m"] = attach_dist_m
+                    tracker = KinematicCarryTracker(mirror, **tracker_kwargs)
                     _warm_real_visual_tracker(tracker)
                     bridge = AsyncMirrorBridge(tracker)
 
@@ -743,29 +889,49 @@ def main(argv: Sequence[str] | None = None) -> int:
                 prime_first_movej_sample(transport, approved.program, executor=args.executor)
                 if mirror is not None:
                     mirror.prime_to_first_arm_segment_start(approved.program)
-                current_drive, gripper_sender = prepare_real_gripper_sender(arm, transport, config.gripper)
-                execution = execute_real(
-                    approved,
-                    transport=transport,
-                    bindings=ExecutionBindings(
-                        robot_key=config.robot.key,
-                        serial_number=serial,
-                        config_sha256=config.sha256,
-                        urdf_sha256=urdf_hash,
-                        calibration_sha256=calibration_hash,
-                        scene_sha256=scene_hash,
-                    ),
-                    confirm_real=True,
-                    runtime_monitor=lambda q, stage: gate.runtime_monitor(
-                        q,
-                        stage,
-                        gripper_drive=current_drive[0],
-                        include_collision=False,
-                    ),
-                    gripper_sender=gripper_sender,
-                    on_tick=bridge.on_tick if bridge is not None else None,
-                    not_ready_codes=frozenset((9,)),
+                current_drive, gripper_sender = prepare_real_gripper_sender(
+                    arm,
+                    transport,
+                    config.gripper,
+                    hardware_version=int(args.vacuum_hardware_version),
                 )
+                switch_ctx = (
+                    kinematics.sync_hardware_switches(arm)
+                    if args.executor == "servo_cartesian"
+                    and callable(getattr(kinematics, "sync_hardware_switches", None))
+                    and callable(getattr(arm, "set_allow_approx_motion", None))
+                    else nullcontext()
+                )
+                try:
+                    with switch_ctx:
+                        execution = execute_real(
+                            approved,
+                            transport=transport,
+                            bindings=ExecutionBindings(
+                                robot_key=config.robot.key,
+                                serial_number=serial,
+                                config_sha256=config.sha256,
+                                urdf_sha256=urdf_hash,
+                                calibration_sha256=calibration_hash,
+                                scene_sha256=scene_hash,
+                            ),
+                            confirm_real=True,
+                            runtime_monitor=lambda q, stage: gate.runtime_monitor(
+                                q,
+                                stage,
+                                gripper_drive=current_drive[0],
+                                include_collision=False,
+                            ),
+                            gripper_sender=gripper_sender,
+                            on_tick=bridge.on_tick if bridge is not None else None,
+                            not_ready_codes=frozenset((9,)),
+                        )
+                finally:
+                    shutdown_real_gripper(
+                        arm,
+                        config.gripper,
+                        hardware_version=int(args.vacuum_hardware_version),
+                    )
                 print_real_execution_summary(execution)
                 if args.visual and mirror_ctx is not None and tracker is not None:
                     _hold_viewer(mirror_ctx, on_step=tracker.hold_step)

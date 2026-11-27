@@ -1,4 +1,4 @@
-# End-to-end tabletop pick-and-place, pure PPO from the fixed home pose.
+# End-to-end tabletop pick-and-place, pure PPO from the fixed home pose (C10 seed-stability recipe).
 schema_version: 1
 environment:
   task_name: pick_place
@@ -30,23 +30,27 @@ reward:
   pregrasp_potential: 4.0
   grasp_potential: 4.0
   lift_potential: 40.0
+  lift_drive_potential: 1.2
   transit_potential: 8.0
-  place_potential: 6.0
-  release_potential: 4.0
-  hold_potential: 6.0
-  first_contact: 2.0
+  place_potential: 9.0
+  release_potential: 8.0
+  hold_potential: 8.0
+  first_contact: 3.0
   first_lift: 6.0
   first_place: 10.0
   success: 40.0
   failure_penalty: 10.0
+  pre_lift_failure_penalty: 4.0
+  post_lift_failure_penalty: 6.0
+  pre_lift_stall_penalty: 0.04
   fast_descent_penalty: 10.0
   press_penalty: 3000.0
   recontact_penalty: 5.0
   table_overload_penalty: 0.1
-  high_release_penalty: 10.0
+  high_release_penalty: 14.0
   robot_table_penalty: 1.0
   action_penalty: 0.001
-  action_saturation_penalty: 0.0
+  action_saturation_penalty: 0.05
   step_penalty: 0.005
 train:
   algorithm:
@@ -74,6 +78,7 @@ train:
       class_name: GaussianDistribution
       init_std: 0.50
       std_type: scalar
+      std_range: [0.16, 0.65]
   critic:
     class_name: MLPModel
     hidden_dims: [256, 256]

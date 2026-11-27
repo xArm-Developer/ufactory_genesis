@@ -29,10 +29,15 @@
 #   source, base_link, mount_joint, flange, mount, glb_visuals, stl_visuals, stl_materials: as for end_effectors
 #   tool_lift_m     the end effector mount moves this far along flange +Z (added on top of any spacer tool_lift_m)
 #
-# spacers.<name>: a plate clamped between the flange and the end effector (it may carry a camera)
+# spacers.<name>: a plate clamped between the flange (or F/T sensor output) and the end effector (it may carry a camera)
 #   source, base_link, mount_joint, flange (or flanges), mount, stl_visuals, stl_materials: as for end_effectors
 #   tool_lift_m     the adapter/end effector mount (or the arm's link_eef when there is none) moves this far along flange +Z
 #   end_effectors   end effectors that fit on the spacer; the bare arm always does
+#
+# ft_sensors.<name>: a six-axis force/torque sensor mounted on the arm flange (below any spacer, adapter, or end effector)
+#   source, base_link, mount_joint, flange, mount, glb_visuals, stl_visuals, stl_materials: as for end_effectors
+#   output_link     link on the sensor where downstream spacers, adapters, and end effectors attach
+#   tool_lift_m     cumulative tool offset added along flange +Z when counting bare link_eef lift
 #
 # cameras.<name>: a camera on a spacer
 #   source, base_link, mount_joint, stl_materials: as for end_effectors; visual "stl" draws the collision boxes
@@ -45,7 +50,7 @@
 #   robots          robot profile keys fitting this plate (each robot appears in at most one mounting plate)
 #   thickness_m     plate thickness (m); the plate occupies z in [-thickness_m, 0]
 #   mount           base_link pose {xyz, rpy} in the arm's link_base frame
-schema_version: 5
+schema_version: 6
 flanges:
   xarm:
     # One part on xArm5/6/7; same layout on UF850: PCD 50 mm, 4 x M6 at 45/135/225/315 deg,
@@ -56,18 +61,18 @@ flanges:
     robots: [lite6]
 end_effectors:
   gripper_g2:
-    source: gripper_g2/gripper_g2_movable_visual.urdf
+    source: end_effectors/gripper_g2/gripper_g2_movable_visual.urdf
     base_link: xarm_gripper_base_link
     mount_joint: gripper_fix
     flange: xarm
     # The base collides as 10 convex hulls, so its STL visual is the full mesh rather than its collision geometry.
     stl_visuals:
-      xarm_gripper_base_link: gripper_g2/meshes/visual/base_link.stl
+      xarm_gripper_base_link: end_effectors/gripper_g2/meshes/visual/base_link.stl
     stl_materials:
       xarm_gripper_base_link: White
       "*": Silver
   bio_gripper_g2:
-    source: bio_gripper_g2/bio_gripper_g2_movable_visual.urdf
+    source: end_effectors/bio_gripper_g2/bio_gripper_g2_movable_visual.urdf
     base_link: bio_gripper_g2_base_link
     mount_joint: bio_gripper_g2_attach
     flange: xarm
@@ -79,71 +84,86 @@ end_effectors:
     # from the flange axis (CAD reference 157.5 mm).
     mount: {xyz: [0.022642, 0.000814, 0.002516], rpy: [0.0, 0.0, -0.00628537]}
   vacuum_gripper:
-    source: vacuum_gripper/vacuum_gripper.urdf
+    source: end_effectors/vacuum_gripper/vacuum_gripper.urdf
     base_link: xarm_vacuum_gripper_link
     mount_joint: vacuum_gripper_fix
     flange: xarm
     stl_visuals:
-      xarm_vacuum_gripper_link: vacuum_gripper/meshes/visual/vacuum_gripper_visual.stl
+      xarm_vacuum_gripper_link: end_effectors/vacuum_gripper/meshes/visual/vacuum_gripper_visual.stl
   robotiq_2f_85:
-    source: robotiq_2f_85/robotiq_2f_85_movable_visual.urdf
+    source: end_effectors/robotiq_2f_85/robotiq_2f_85_movable_visual.urdf
     base_link: robotiq_2f_85_base_link
     mount_joint: robotiq_2f_85_fix
     flange: xarm
     adapter: robotiq_mounting
     stl_visuals:
-      robotiq_2f_85_base_link: robotiq_2f_85/meshes/visual/robotiq_2f_85_base.stl
+      robotiq_2f_85_base_link: end_effectors/robotiq_2f_85/meshes/visual/robotiq_2f_85_base.stl
     stl_materials:
       robotiq_2f_85_left_inner_knuckle: Silver
       robotiq_2f_85_right_inner_knuckle: Silver
       "*": DarkGrey
   robotiq_2f_140:
-    source: robotiq_2f_140/robotiq_2f_140_movable_visual.urdf
+    source: end_effectors/robotiq_2f_140/robotiq_2f_140_movable_visual.urdf
     base_link: robotiq_2f_140_base_link
     mount_joint: robotiq_2f_140_fix
     flange: xarm
     adapter: robotiq_mounting
     stl_visuals:
-      robotiq_2f_140_base_link: robotiq_2f_140/meshes/visual/robotiq_2f_140_base.stl
+      robotiq_2f_140_base_link: end_effectors/robotiq_2f_140/meshes/visual/robotiq_2f_140_base.stl
     stl_materials:
       robotiq_2f_140_left_inner_knuckle: Silver
       robotiq_2f_140_right_inner_knuckle: Silver
       "*": DarkGrey
   lite6_gripper:
-    source: lite6_gripper/lite6_gripper_movable_visual.urdf
+    source: end_effectors/lite6_gripper/lite6_gripper_movable_visual.urdf
     base_link: uflite_gripper_link
     mount_joint: gripper_fix
     flange: lite6
     stl_materials:
       uflite_gripper_link: White
   lite6_vacuum_gripper:
-    source: lite6_vacuum_gripper/lite6_vacuum_gripper.urdf
+    source: end_effectors/lite6_vacuum_gripper/lite6_vacuum_gripper.urdf
     base_link: uflite_vacuum_gripper_link
     mount_joint: vacuum_gripper_fix
     flange: lite6
     glb_visuals:
-      uflite_vacuum_gripper_link: lite6_vacuum_gripper/meshes/visual/lite6_vacuum_gripper_visual_link6.glb
+      uflite_vacuum_gripper_link: end_effectors/lite6_vacuum_gripper/meshes/visual/lite6_vacuum_gripper_visual_link6.glb
 adapters:
   robotiq_mounting:
     # UFACTORY 11 mm silver anodized aluminium xArm-to-Robotiq flange adapter (OD 75 mm, 109.7 g, Ø31.5 x 5.6 mm
     # centring boss). Fits xArm5/6/7 and UF850 (ISO 9409-1-50-4-M6 flange; not Lite 6) and adapts to Robotiq
     # 2F-85 / 2F-140 (4 x M4 at (+/-16, +/-27) mm, Ø4 mm locating pin at (0, -30.5) mm, Ø71 mm centring recess).
-    source: robotiq_mounting/robotiq_mounting.urdf
+    source: mounts/robotiq_mounting/robotiq_mounting.urdf
     base_link: robotiq_mounting
     mount_joint: robotiq_mounting_fix
     flange: xarm
     tool_lift_m: 0.011
     stl_visuals:
-      robotiq_mounting: robotiq_mounting/meshes/visual/robotiq_mounting.stl
+      robotiq_mounting: mounts/robotiq_mounting/meshes/visual/robotiq_mounting.stl
     stl_materials:
       robotiq_mounting: AdapterAluminum
+ft_sensors:
+  ft_sensor_ai1500:
+    # UFACTORY AI1500 six-axis force/torque sensor (0.6 kg, CoM [0, 0, 22] mm, +58.6 mm tool lift).
+    # Mounts onto the xArm/UF850 ISO 9409-1-50-4-M6 flange (not Lite 6); downstream camera stands,
+    # adapters, and end effectors stack on ft_sensor_ai1500_output.
+    source: accessories/ft_sensor_ai1500/ft_sensor_ai1500.urdf
+    base_link: ft_sensor_ai1500
+    output_link: ft_sensor_ai1500_output
+    mount_joint: ft_sensor_ai1500_fix
+    flange: xarm
+    tool_lift_m: 0.0586
+    stl_visuals:
+      ft_sensor_ai1500: accessories/ft_sensor_ai1500/meshes/visual/ft_sensor_ai1500.stl
+    stl_materials:
+      ft_sensor_ai1500: FtSensorAluminum
 spacers:
   camera_stand:
     # UFACTORY 3 mm aluminium camera stand, 48 g. Its frame has the plate thickness along +Y, so the mount turns
     # +Y onto flange +Z. Fits both xarm and lite6 (ISO 9409-1-50-4-M6 flange). Camera holes around (67.5, 3, 0) mm:
     # 2 x M3 at 20 mm and at 45 mm, and a 20 x 20 mm square of 4 x M3. Bio Gripper G2 is excluded: its body
     # reaches x = 59.22 mm and hits D405/D435.
-    source: camera_stand/camera_stand.urdf
+    source: mounts/camera_stand/camera_stand.urdf
     base_link: camera_stand
     mount_joint: camera_stand_fix
     flanges: [xarm, lite6]
@@ -151,7 +171,7 @@ spacers:
     tool_lift_m: 0.003
     end_effectors: [gripper_g2, vacuum_gripper, robotiq_2f_85, robotiq_2f_140, lite6_gripper, lite6_vacuum_gripper]
     stl_visuals:
-      camera_stand: camera_stand/meshes/visual/camera_stand.stl
+      camera_stand: mounts/camera_stand/meshes/visual/camera_stand.stl
     stl_materials:
       camera_stand: StandAluminum
 cameras:
@@ -159,7 +179,7 @@ cameras:
   # camera looks along flange +Z with its top towards flange +X.
   d405:
     # Rear 2 x M3 at 20 mm.
-    source: d405/d405.urdf
+    source: cameras/d405/d405.urdf
     base_link: d405_body
     mount_joint: d405_fix
     spacer: camera_stand
@@ -168,7 +188,7 @@ cameras:
     stl_materials: {"*": d405_housing}
   d435:
     # Rear 2 x M3 at 45 mm; 0.055 mm gap because the ROS mesh pokes 0.0547 mm past its nominal rear face.
-    source: d435/d435.urdf
+    source: cameras/d435/d435.urdf
     base_link: d435_body
     mount_joint: d435_fix
     spacer: camera_stand
@@ -177,7 +197,7 @@ cameras:
     stl_materials: {"*": d435_housing}
   gemini_305:
     # Rear 2 x M3 at 20 mm.
-    source: gemini_305/gemini_305.urdf
+    source: cameras/gemini_305/gemini_305.urdf
     base_link: gemini_305_body
     mount_joint: gemini_305_fix
     spacer: camera_stand
@@ -186,7 +206,7 @@ cameras:
     stl_materials: {"*": gemini_305_housing}
   zed_x_nano:
     # Rear 20 x 20 mm square of 4 x M3; the GMSL2 connector passes through the stand's centre opening.
-    source: zed_x_nano/zed_x_nano.urdf
+    source: cameras/zed_x_nano/zed_x_nano.urdf
     base_link: zed_x_nano_body
     mount_joint: zed_x_nano_fix
     spacer: camera_stand
@@ -196,7 +216,7 @@ cameras:
 mounting_plates:
   xarm_mounting_plate:
     # UFACTORY 8 mm aluminium mounting plate (136 x 185 mm, long edge along Y, two-chamfered tongue facing +X).
-    source: xarm_mounting_plate/xarm_mounting_plate.urdf
+    source: mounts/xarm_mounting_plate/xarm_mounting_plate.urdf
     base_link: xarm_mounting_plate
     mount_joint: mounting_plate_fix
     robots: [xarm5_1305, xarm6_1305, xarm7_1305]
@@ -205,7 +225,7 @@ mounting_plates:
     stl_materials: {"*": PlateAluminum}
   uf850_mounting_plate:
     # UFACTORY 10 mm aluminium mounting plate (190 x 260 mm, long edge along Y).
-    source: uf850_mounting_plate/uf850_mounting_plate.urdf
+    source: mounts/uf850_mounting_plate/uf850_mounting_plate.urdf
     base_link: uf850_mounting_plate
     mount_joint: mounting_plate_fix
     robots: [uf850]
@@ -215,7 +235,7 @@ mounting_plates:
   lite6_mounting_plate:
     # UFACTORY 5 mm aluminium mounting plate (130 x 190 mm, long edge along Y).
     # Lite 6's four base mounting holes are centred at (-3, 0) mm in link_base.
-    source: lite6_mounting_plate/lite6_mounting_plate.urdf
+    source: mounts/lite6_mounting_plate/lite6_mounting_plate.urdf
     base_link: lite6_mounting_plate
     mount_joint: mounting_plate_fix
     robots: [lite6]

@@ -11,6 +11,7 @@ import genesis as gs
 
 from ufactory.robots.paths import (
     bio_gripper_g2_movable_visual_urdf,
+    ft_sensor_ai1500_urdf,
     gripper_g2_movable_visual_urdf,
     lite6_gripper_movable_visual_urdf,
     lite6_mounting_plate_urdf,
@@ -158,6 +159,15 @@ STANDALONE_TOOL_SPECS: dict[str, StandaloneToolSpec] = {
         base_quat=UPRIGHT_QUAT_WXYZ,
         camera_pos=ADAPTER_CAMERA_POS,
         camera_lookat=ADAPTER_CAMERA_LOOKAT,
+    ),
+    "ft_sensor_ai1500": StandaloneToolSpec(
+        name="ft_sensor_ai1500",
+        description="UFACTORY AI1500 six-axis force/torque sensor static preview (standalone)",
+        urdf_loader=ft_sensor_ai1500_urdf,
+        base_pos=(0.0, 0.0, 0.005),
+        base_quat=UPRIGHT_QUAT_WXYZ,
+        camera_pos=(0.18, -0.22, 0.14),
+        camera_lookat=(0.0, 0.0, 0.03),
     ),
     "bio_gripper_g2": StandaloneToolSpec(
         name="bio_gripper_g2",

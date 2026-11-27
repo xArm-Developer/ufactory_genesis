@@ -502,3 +502,216 @@ def test_three_seed_runner_preserves_failed_evaluation_and_still_records(monkeyp
     assert not report["passed"]
     assert report["seeds"]["1"]["passed"] and report["seeds"]["3"]["passed"]
     assert "glb" in report["seeds"]["2"]
+
+
+def test_outer_margin_linear_spring_relaxes_without_dead_zone(monkeypatch):
+    env = controller(monkeypatch)
+    env.obj = SimpleNamespace(
+        get_pos=lambda: torch.tensor([[0.30, 0.00, 0.080], [0.30, 0.00, 0.080]]),
+        get_quat=lambda: torch.tensor([[1.0, 0.0, 0.0, 0.0]]).repeat(2, 1),
+    )
+    env.target_xy = torch.tensor([[0.3, 0.3]])
+    env.near_table_m = 0.020
+    env.metrics = SimpleNamespace(
+        ever_lifted_clear=torch.tensor([True, True]),
+        release_confirmed=torch.tensor([False, False]),
+        high_release=torch.tensor([False, False]),
+        touchdown_seen=torch.tensor([False, False]),
+        touchdown_ee_z=torch.zeros(2),
+        hold_steps=torch.zeros(2, dtype=torch.long),
+        contact_steps=torch.zeros(2, dtype=torch.long),
+        ever_carried=torch.tensor([True, True]),
+        target_tol=0.020,
+        place_clearance=0.002,
+        release_max_height=0.003,
+    )
+    # Env 0 inside inner box -> zero spring drift; Env 1 above soft ceiling z=0.262 -> spring pulls back smoothly.
+    env.ee_setpoint = torch.tensor([[0.35, 0.10, 0.24], [0.35, 0.10, 0.29]])
+    env.ee_link = SimpleNamespace(get_pos=lambda: env.ee_setpoint.clone())
+    env._apply_action(torch.zeros(2, 4), torch.tensor([0.03, 0.03]))
+    torch.testing.assert_close(env.ee_setpoint[0], torch.tensor([0.35, 0.10, 0.24]))
+    assert env.ee_setpoint[1, 2].item() == pytest.approx(0.29 - 0.16 * (0.29 - 0.262), abs=1e-6)
+
+
+def test_unclamping_ratchet_blocks_negative_jitter_only_after_unclamp_starts(monkeypatch):
+    env = controller(monkeypatch)
+    env.obj = SimpleNamespace(
+        get_pos=lambda: torch.tensor([[0.30, 0.30, 0.016], [0.30, 0.30, 0.016]]),
+        get_quat=lambda: torch.tensor([[1.0, 0.0, 0.0, 0.0]]).repeat(2, 1),
+    )
+    env.target_xy = torch.tensor([[0.3, 0.3]])
+    env.near_table_m = 0.020
+    env.metrics = SimpleNamespace(
+        ever_lifted_clear=torch.tensor([True, True]),
+        release_confirmed=torch.tensor([False, False]),
+        high_release=torch.tensor([False, False]),
+        touchdown_seen=torch.tensor([True, True]),
+        touchdown_ee_z=torch.tensor([0.185, 0.185]),
+        hold_steps=torch.zeros(2, dtype=torch.long),
+        contact_steps=torch.zeros(2, dtype=torch.long),
+        ever_carried=torch.tensor([True, True]),
+        target_tol=0.020,
+        place_clearance=0.002,
+        release_max_height=0.003,
+    )
+    # Env 0 is still clamped (gap_cmd=0.015 < measured 0.030); Env 1 has started unclamping (gap_cmd=0.031 >= measured 0.030).
+    env.gap_cmd = torch.tensor([0.015, 0.031])
+    env._apply_action(torch.tensor([[0.0, 0.0, 0.0, -1.0], [0.0, 0.0, 0.0, -1.0]]), torch.tensor([0.030, 0.030]))
+    assert env.gap_cmd[0].item() == pytest.approx(0.012, abs=1e-6)
+    assert env.gap_cmd[1].item() == pytest.approx(0.031, abs=1e-6)
+
+
+def test_c10_lift_drive_gives_positive_gradient_at_negative_az_and_no_drop_at_lift(monkeypatch):
+    env = controller(monkeypatch)
+    from examples.rl.pick_place import env as module
+
+    obj = torch.tensor([[0.35, 0.0, 0.019], [0.35, 0.0, 0.019]])
+    pads = obj.clone()
+    env.obj = SimpleNamespace(get_pos=lambda: obj, get_quat=lambda: torch.tensor([[1.0, 0.0, 0.0, 0.0]]).repeat(2, 1))
+    monkeypatch.setattr(module, "pad_centers", lambda *args: (pads, pads))
+    env.g2_model, env.left_finger_link, env.right_finger_link = None, None, None
+    env.pre_grasp_gap_m, env.reward_scales = 0.05, {"lift_drive_potential": 1.2}
+    env.target_xy = torch.tensor([[0.3, 0.3]])
+    env.forces = torch.full((2, 2), 4.0)
+    env.place_rewarded = torch.zeros(2, dtype=torch.bool)
+    env.gap_cmd = torch.full((2,), 0.015)
+    env.measured_gap = lambda: torch.full((2,), 0.030)
+    env.metrics = SimpleNamespace(
+        spawn_xy=obj[:, :2].clone(),
+        max_held_z=torch.full((2,), 0.019),
+        ever_lifted_clear=torch.zeros(2, dtype=torch.bool),
+        ever_carried=torch.zeros(2, dtype=torch.bool),
+        contact_steps=torch.tensor([5, 5], dtype=torch.long),
+        release_confirmed=torch.zeros(2, dtype=torch.bool),
+        touchdown_seen=torch.zeros(2, dtype=torch.bool),
+        touchdown_ee_z=torch.zeros(2),
+        hold_steps=torch.zeros(2, dtype=torch.long),
+        required_hold_steps=10,
+        place_clearance=0.002,
+        release_max_height=0.003,
+    )
+    # Even when both sampled a_z < 0 (clamped physically to 0), less-negative a_z must raise potential.
+    env.last_actions = torch.tensor([[0.0, 0.0, -1.0, 0.0], [0.0, 0.0, -0.2, 0.0]])
+    pot_neg = env._potential()
+    assert pot_neg[1] > pot_neg[0] + 0.4
+
+    # Crossing ever_lifted_clear must never cause a negative jump in lift_drive.
+    obj[:, 2] = 0.080
+    pads[:] = obj
+    env.metrics.max_held_z[:] = 0.080
+    before = env._potential()
+    env.metrics.ever_lifted_clear[:] = True
+    after = env._potential()
+    assert torch.all(after >= before)
+
+
+def test_c10_lift_off_xy_damping_active_only_below_15mm(monkeypatch):
+    env = controller(monkeypatch)
+    # Env 0 cube at 4 mm clearance (< 15 mm) -> damped by 0.35; Env 1 at 25 mm (>= 15 mm) -> full 1.0 XY control.
+    env.obj = SimpleNamespace(
+        get_pos=lambda: torch.tensor([[0.35, 0.00, 0.019], [0.35, 0.00, 0.040]]),
+        get_quat=lambda: torch.tensor([[1.0, 0.0, 0.0, 0.0]]).repeat(2, 1),
+    )
+    env.target_xy = torch.tensor([[0.3, 0.3]])
+    env.near_table_m = 0.020
+    env.metrics = SimpleNamespace(
+        ever_lifted_clear=torch.tensor([False, False]),
+        release_confirmed=torch.tensor([False, False]),
+        high_release=torch.tensor([False, False]),
+        touchdown_seen=torch.tensor([False, False]),
+        touchdown_ee_z=torch.zeros(2),
+        hold_steps=torch.zeros(2, dtype=torch.long),
+        contact_steps=torch.tensor([5, 5], dtype=torch.long),
+        ever_carried=torch.tensor([False, True]),
+        target_tol=0.020,
+        place_clearance=0.002,
+        release_max_height=0.003,
+    )
+    env.ee_setpoint = torch.tensor([[0.35, 0.00, 0.20], [0.35, 0.00, 0.22]])
+    env.ee_link = SimpleNamespace(get_pos=lambda: env.ee_setpoint.clone())
+    env._apply_action(torch.tensor([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]]), torch.tensor([0.03, 0.03]))
+    assert env.ee_setpoint[0, 0].item() == pytest.approx(0.35 + 0.35 * 0.005, abs=1e-6)
+    assert env.ee_setpoint[1, 0].item() == pytest.approx(0.35 + 1.00 * 0.005, abs=1e-6)
+
+
+def test_c10_lift_only_potential_zero_at_rest_and_positive_when_lifted(monkeypatch):
+    env = controller(monkeypatch)
+    # Env 0 rests on table (0 mm), Env 1 lifted cleanly to 25 mm.
+    env.obj = SimpleNamespace(
+        get_pos=lambda: torch.tensor([[0.35, 0.00, 0.015], [0.35, 0.00, 0.040]]),
+        get_quat=lambda: torch.tensor([[1.0, 0.0, 0.0, 0.0]]).repeat(2, 1),
+    )
+    env.forces = torch.tensor([[4.0, 4.0], [4.0, 4.0]])
+    env.reward_scales = {"lift_potential": 40.0}
+    env.metrics = SimpleNamespace(
+        max_held_z=torch.tensor([0.015, 0.040]),
+        ever_lifted_clear=torch.tensor([False, False]),
+    )
+    lift_pot = env._lift_only_potential()
+    assert lift_pot[0].item() == pytest.approx(0.0, abs=1e-7)
+    assert lift_pot[1].item() == pytest.approx(40.0 * 0.025, abs=1e-6)
+
+
+@pytest.mark.gpu
+def test_c10_gpu_flange_limits_and_finite_horizon_timeout() -> None:
+    import json
+    import subprocess
+    import sys
+    import textwrap
+
+    pytest.importorskip("genesis")
+    from ufactory.training.pick_place_config import PRE_LIFT_PAD_FLOOR_Z, TOUCHDOWN_REF_MARGIN_Z
+
+    project_root = Path(__file__).resolve().parents[2]
+    script = textwrap.dedent(
+        """
+        import json
+        from pathlib import Path
+        import genesis as gs
+        import torch
+
+        from examples.rl.pick_place.env import XArm6PickPlaceEnv
+        from examples.rl.pick_place.runtime import DEFAULT_RECIPE, configure_runtime
+        from ufactory.simulation.compat import require_genesis_runtime
+        from ufactory.simulation.g2_adapter import pad_centers
+        from ufactory.training import build_pick_place_task_configs
+
+        configure_runtime()
+        env_cfg, reward_cfg, robot_cfg = build_pick_place_task_configs("xarm6", recipe_path=DEFAULT_RECIPE)
+        env_cfg["num_envs"] = 4
+        require_genesis_runtime(gs)
+        gs.init(backend=gs.gpu, precision="32", logging_level="warning", seed=1)
+        env = XArm6PickPlaceEnv(env_cfg=env_cfg, reward_cfg=reward_cfg, robot_cfg=robot_cfg, show_viewer=False)
+        left, right = pad_centers(env.g2_model, env.left_finger_link, env.right_finger_link)
+        flange_to_pad_z = float((env.ee_link.get_pos()[:, 2] - (left[:, 2] + right[:, 2]) / 2).mean())
+        env.episode_length_buf[:] = env.max_episode_length - 1
+        _, _, timeout_dones, timeout_info = env.step(torch.zeros(4, 4, device=gs.device))
+        print(
+            json.dumps(
+                {
+                    "pre_lift_flange_floor_z": env.pre_lift_flange_floor_z,
+                    "touchdown_ref_ee_z": env.touchdown_ref_ee_z,
+                    "flange_to_pad_z": flange_to_pad_z,
+                    "timeout_dones": timeout_dones.bool().tolist(),
+                    "time_outs": timeout_info["time_outs"].bool().tolist(),
+                }
+            )
+        )
+        gs.destroy()
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode == 0, f"stderr:\n{result.stderr}\nstdout:\n{result.stdout}"
+    data = json.loads(result.stdout.strip().splitlines()[-1])
+    assert data["pre_lift_flange_floor_z"] == pytest.approx(PRE_LIFT_PAD_FLOOR_Z + data["flange_to_pad_z"], abs=1e-5)
+    assert data["touchdown_ref_ee_z"] == pytest.approx(
+        data["pre_lift_flange_floor_z"] + TOUCHDOWN_REF_MARGIN_Z, abs=1e-9
+    )
+    assert data["timeout_dones"] == [True, True, True, True]
+    assert data["time_outs"] == [False, False, False, False]

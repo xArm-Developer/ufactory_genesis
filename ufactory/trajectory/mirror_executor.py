@@ -7,6 +7,7 @@ the xArm servo stream without adding measurable tick overrun.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import threading
 import time
 
@@ -14,6 +15,7 @@ import numpy as np
 import torch
 
 from ufactory.kinematics.genesis import solve_link6_ik
+from ufactory.kinematics.orientation import GRIPPER_DOWN_QUAT_XYZW
 from ufactory.trajectory.ik import _ik_damping_for_context
 from ufactory.trajectory.scene import TrajSceneContext, drive_for_gap_m
 from ufactory.trajectory.segments import Program, Segment
@@ -22,11 +24,20 @@ from ufactory.grippers.lite6 import snap_object_to_lite6_glb_grasp
 
 def gap_m_from_drive(drive: float, gripper) -> float:
     """Map a gripper drive-DOF value back to a physical two-finger gap (m)."""
+    if gripper is None or not getattr(gripper, "all_joint_names", ()):
+        return 0.0
     if gripper.family == "g2":
         from ufactory.grippers.g2 import gripper_g2_sim_drive_to_gap_m
 
         return gripper_g2_sim_drive_to_gap_m(drive)
-    open_fraction = (float(drive) - gripper.close_pos) / (gripper.open_pos - gripper.close_pos)
+    if gripper.family == "bio_gripper_g2":
+        from ufactory.grippers.bio_g2 import bio_gripper_g2_sim_drive_to_gap_m
+
+        return bio_gripper_g2_sim_drive_to_gap_m(drive)
+    span = float(gripper.open_pos) - float(gripper.close_pos)
+    if abs(span) < 1e-12:
+        return float(getattr(gripper, "closed_gap_m", 0.0))
+    open_fraction = (float(drive) - gripper.close_pos) / span
     open_fraction = max(0.0, min(1.0, open_fraction))
     closed_gap = float(getattr(gripper, "closed_gap_m", 0.0))
     return closed_gap + open_fraction * (float(gripper.open_gap_m) - closed_gap)
@@ -41,6 +52,35 @@ def _default_ik_seed(ctx: TrajSceneContext) -> np.ndarray | None:
     if home_qpos is not None and arm_dof_idx is not None and len(home_qpos):
         return np.asarray(home_qpos, dtype=np.float64)[arm_dof_idx].copy()
     return None
+
+
+def _solve_controller_base_xyz(
+    controller,
+    xyz_base,
+    *,
+    seed: np.ndarray | None,
+    dt_s: float | None = None,
+) -> np.ndarray:
+    xyz = np.asarray(xyz_base, dtype=np.float64).reshape(3)
+    pose = np.concatenate((xyz, np.asarray(GRIPPER_DOWN_QUAT_XYZW, dtype=np.float64)))
+    if seed is None:
+        from ufactory.control.kinematics_chain import pose_to_se3
+        from ufactory.control.solvers import solve_exact_ik
+
+        res = solve_exact_ik(
+            controller.chain,
+            pose_to_se3(pose, position_in_mm=False),
+            include_tcp=False,
+            cold_start_fallback=True,
+        )
+        return np.asarray(res.q_rad, dtype=np.float64).reshape(-1)
+    res = controller.solve_step(
+        pose,
+        np.asarray(seed, dtype=np.float64).reshape(-1),
+        dt_s=dt_s,
+        include_tcp=False,
+    )
+    return np.asarray(res.q_rad, dtype=np.float64).reshape(-1)
 
 
 def resolve_segment_start_arm_q(
@@ -61,6 +101,11 @@ def resolve_segment_start_arm_q(
         if seg.pose_start is None:
             raise ValueError(f"MoveL segment {seg.label!r} has no pose_start")
         seed = _default_ik_seed(ctx) if init_qpos is None else init_qpos
+        controller = getattr(ctx, "arm_controller", None)
+        if controller is not None:
+            q = _solve_controller_base_xyz(controller, seg.pose_start, seed=seed)
+            ctx._last_ik_qpos = q.copy()
+            return q
         ik_damping = _ik_damping_for_context(ctx) if damping is None else float(damping)
         pose_world = ctx.base_to_world(seg.pose_start)
         q = solve_link6_ik(
@@ -85,6 +130,7 @@ def resolve_tick_arm_q(
     *,
     init_qpos: np.ndarray | None = None,
     damping: float | None = None,
+    dt_s: float | None = None,
 ) -> np.ndarray:
     """Resolve arm joint targets for one tick (same logic as sim replay)."""
     if seg.kind == "movej":
@@ -93,6 +139,13 @@ def resolve_tick_arm_q(
         return q
     if seg.kind == "movel":
         seed = _default_ik_seed(ctx) if init_qpos is None else init_qpos
+        controller = getattr(ctx, "arm_controller", None)
+        if controller is not None:
+            if seed is None and tick_idx == 0 and seg.pose_start is not None:
+                seed = _solve_controller_base_xyz(controller, seg.pose_start, seed=None, dt_s=dt_s)
+            q = _solve_controller_base_xyz(controller, samples[tick_idx], seed=seed, dt_s=dt_s)
+            ctx._last_ik_qpos = q.copy()
+            return q
         ik_damping = _ik_damping_for_context(ctx) if damping is None else float(damping)
         if tick_idx == 0 and seg.pose_start is not None:
             seed = solve_link6_ik(
@@ -140,7 +193,9 @@ def mirror_grip_drive_for_gap_m(ctx: TrajSceneContext, gap_m: float) -> float:
     """
     gap = float(gap_m)
     gripper = ctx.gripper
-    family = getattr(gripper, "family", None) if gripper is not None else None
+    if gripper is None or not getattr(gripper, "all_joint_names", ()):
+        return 0.0
+    family = getattr(gripper, "family", None)
     obj_w = float(min(ctx.obj_size[0], ctx.obj_size[1]))
     shrink = None
     if family == "lite6":
@@ -168,18 +223,32 @@ def _set_kinematic_pose(
     arm_idx: list[int],
     grip_drive: float,
     all_grip_idx: list[int],
+    grip_multipliers: Sequence[float] | None = None,
 ) -> None:
     robot.set_dofs_position(q_arm, arm_idx, zero_velocity=True)
     if all_grip_idx:
-        grip_target = np.full(len(all_grip_idx), float(grip_drive))
+        if grip_multipliers is not None and len(grip_multipliers) > 0 and len(grip_multipliers) == len(all_grip_idx):
+            grip_target = float(grip_drive) * np.asarray(grip_multipliers, dtype=np.float64)
+        else:
+            grip_target = np.full(len(all_grip_idx), float(grip_drive))
         robot.set_dofs_position(grip_target, all_grip_idx, zero_velocity=True)
 
 
 def _update_mirror_entities(context, entities: tuple[object, ...]) -> None:
     """Upload only moving rigid entities to the rasterizer node buffers."""
-    visualizer = context.visualizer
-    visualizer.update_visual_states(force_render=True)
+    visualizer = getattr(context, "visualizer", None)
+    update_visual_states = getattr(visualizer, "update_visual_states", None)
+    rigid_nodes = getattr(context, "rigid_nodes", None)
+    if not callable(update_visual_states) or rigid_nodes is None:
+        # Genesis 1.5+ replaced rigid_nodes with changelog-tracked _sync_shapes().
+        context.update(force_render=True)
+        return
+
+    update_visual_states(force_render=True)
     context._scene._bounds = None
+
+    rigid_geoms_t = getattr(context, "rigid_geoms_T", None)
+    geoms_t_cache: dict[tuple[int, bool], np.ndarray] = {}
 
     for entity in entities:
         if getattr(entity._morph, "enable_custom_vverts", False):
@@ -187,26 +256,42 @@ def _update_mirror_entities(context, entities: tuple[object, ...]) -> None:
             context.update(force_render=True)
             return
         solver = entity._solver
-        if entity.surface.vis_mode == "visual":
-            geoms = entity.vgeoms
-            geoms_t = solver._vgeoms_render_T
+        is_visual = entity.surface.vis_mode == "visual"
+        geoms = entity.vgeoms if is_visual else entity.geoms
+
+        if callable(rigid_geoms_t):
+            # Genesis 1.4.7+: shape (n_rendered_envs, n_geoms, 4, 4), already indexed
+            # by context.rendered_envs_idx.
+            cache_key = (id(solver), is_visual)
+            geoms_t = geoms_t_cache.get(cache_key)
+            if geoms_t is None:
+                geoms_t = rigid_geoms_t(solver, is_visual)
+                geoms_t_cache[cache_key] = geoms_t
+            rendered_layout = True
         else:
-            geoms = entity.geoms
-            geoms_t = solver._geoms_render_T
+            render_attr = "_vgeoms_render_T" if is_visual else "_geoms_render_T"
+            geoms_t = getattr(solver, render_attr, None)
+            if geoms_t is None:
+                context.update(force_render=True)
+                return
+            rendered_layout = False
+
         for geom in geoms:
-            if geom.uid not in context.rigid_nodes:
+            if geom.uid not in rigid_nodes:
                 continue
             geom_envs_idx = context._get_geom_active_envs_idx(geom, context.rendered_envs_idx)
             if len(geom_envs_idx) == 0:
                 continue
-            if len(geom_envs_idx) < len(context.rendered_envs_idx):
+            if rendered_layout:
+                geom_t = geoms_t[:, geom.idx]
+            elif len(geom_envs_idx) < len(context.rendered_envs_idx):
                 geom_t = geoms_t[geom.idx][context.rendered_envs_idx]
             else:
                 geom_t = geoms_t[geom.idx][geom_envs_idx]
-            node = context.rigid_nodes[geom.uid]
+            node = rigid_nodes[geom.uid]
             node.mesh._bounds = None
             node.mesh.primitives[0].poses = geom_t
-            context.jit.update_buffer(node, "model", geom_t.transpose((0, 2, 1)))
+            context.jit.update_buffer(node, "model", np.ascontiguousarray(geom_t.transpose((0, 2, 1))))
 
 
 def update_scene_visualizer(scene, *, entities: tuple[object, ...] | None = None) -> bool:
@@ -288,7 +373,14 @@ def kinematic_step(
     arm_idx = ctx.arm_dof_idx
     all_grip_idx = ctx.all_gripper_dof_idx
 
-    _set_kinematic_pose(robot, q_arm, arm_idx, grip_drive, all_grip_idx)
+    _set_kinematic_pose(
+        robot,
+        q_arm,
+        arm_idx,
+        grip_drive,
+        all_grip_idx,
+        grip_multipliers=getattr(ctx, "gripper_dof_multipliers", None) or None,
+    )
     if update_visualizer:
         update_scene_visualizer(scene, entities=(ctx.robot, ctx.obj))
 
@@ -306,7 +398,8 @@ class TrajKinematicMirror:
         else:
             self._last_q_arm = np.zeros(len(arm_idx), dtype=np.float64)
         ctx._last_ik_qpos = self._last_q_arm.copy()
-        self._grip_drive = drive_for_gap_m(ctx.gripper.open_gap_m, ctx.gripper)
+        self._has_gripper_dofs = bool(ctx.gripper is not None and ctx.all_gripper_dof_idx)
+        self._grip_drive = drive_for_gap_m(ctx.gripper.open_gap_m, ctx.gripper) if self._has_gripper_dofs else 0.0
         _disable_pd(ctx.robot, arm_idx)
         _disable_pd(ctx.robot, ctx.all_gripper_dof_idx)
 
@@ -319,6 +412,8 @@ class TrajKinematicMirror:
         return self._grip_drive
 
     def _visual_grip_drive(self) -> float:
+        if not self._has_gripper_dofs:
+            return 0.0
         return mirror_grip_drive_for_gap_m(self.ctx, gap_m_from_drive(self._grip_drive, self.ctx.gripper))
 
     def prime_to_home(self) -> None:
@@ -326,7 +421,9 @@ class TrajKinematicMirror:
         if len(self.ctx.home_qpos):
             self._last_q_arm = self.ctx.home_qpos[arm_idx].astype(np.float64).copy()
         self.ctx._last_ik_qpos = self._last_q_arm.copy()
-        self._grip_drive = drive_for_gap_m(self.ctx.gripper.open_gap_m, self.ctx.gripper)
+        self._grip_drive = (
+            drive_for_gap_m(self.ctx.gripper.open_gap_m, self.ctx.gripper) if self._has_gripper_dofs else 0.0
+        )
         kinematic_step(self.ctx, self._last_q_arm, self._visual_grip_drive())
 
     def prime_to_segment_start(self, seg: Segment) -> None:
@@ -346,10 +443,13 @@ class TrajKinematicMirror:
         if tick_idx < 0 or tick_idx >= n:
             raise IndexError(f"tick {tick_idx} out of range for segment {seg.label!r} (N={n})")
         if seg.kind == "gripper":
-            gap_m = float(samples[tick_idx, 0])
-            # Keep the planned drive for attach/release gap logic; clamp only the
-            # teleported visual pose so Lite6 pads do not penetrate the cube.
-            self._grip_drive = drive_for_gap_m(gap_m, self.ctx.gripper)
+            if self._has_gripper_dofs:
+                gap_m = float(samples[tick_idx, 0])
+                # Keep the planned drive for attach/release gap logic; clamp only the
+                # teleported visual pose so Lite6 pads do not penetrate the cube.
+                self._grip_drive = drive_for_gap_m(gap_m, self.ctx.gripper)
+            else:
+                self._grip_drive = 0.0
             kinematic_step(
                 self.ctx,
                 self._last_q_arm,
@@ -363,6 +463,7 @@ class TrajKinematicMirror:
             samples,
             tick_idx,
             init_qpos=self._last_q_arm,
+            dt_s=1.0 / self.rate,
         )
         kinematic_step(
             self.ctx,
@@ -491,10 +592,29 @@ class KinematicCarryTracker:
             self.ctx.obj.set_quat(obj_quat, zero_velocity=True)
             update_scene_visualizer(self.ctx.scene, entities=(self.ctx.robot, self.ctx.obj))
 
+    def _tool_center(self) -> torch.Tensor:
+        lf = getattr(self.ctx, "left_finger", None)
+        rf = getattr(self.ctx, "right_finger", None)
+        if lf is not None and rf is not None:
+            return (lf.get_pos()[0] + rf.get_pos()[0]) / 2
+        tip_link = getattr(self.ctx, "tool_tip_link", None)
+        if tip_link is not None:
+            return tip_link.get_pos()[0]
+        flange_pos = self.ctx.ik_link.get_pos()[0]
+        offset_m = getattr(self.ctx, "tcp_offset_flange_m", (0.0, 0.0, 0.0))
+        if not any(abs(float(v)) > 1e-12 for v in offset_m):
+            return flange_pos
+        vec = flange_pos.new_tensor(tuple(float(v) for v in offset_m))
+        quat_getter = getattr(self.ctx.ik_link, "get_quat", None)
+        if callable(quat_getter):
+            q = quat_getter()[0]  # Genesis WXYZ
+            qw, qv = q[0], q[1:4]
+            t = 2.0 * torch.linalg.cross(qv, vec)
+            return flange_pos + vec + qw * t + torch.linalg.cross(qv, t)
+        return flange_pos + flange_pos.new_tensor((float(offset_m[0]), -float(offset_m[1]), -float(offset_m[2])))
+
     def _finger_center(self) -> torch.Tensor:
-        lf = self.ctx.left_finger.get_pos()[0]
-        rf = self.ctx.right_finger.get_pos()[0]
-        return (lf + rf) / 2
+        return self._tool_center()
 
     def _capture_spawn_freeze_pose(self) -> None:
         self._spawn_freeze_pos = self.ctx.obj.get_pos()[0].clone()

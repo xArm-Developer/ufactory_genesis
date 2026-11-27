@@ -35,6 +35,7 @@ gripper:
   finger_close_descent_m: 0.0253
   grasp_table_clearance_m: 0.01
   grasp_height_extra_m: 0.0
+  tcp_offset: [0.0, 0.0, 246.1, 0.0, 0.0, 0.0]
 task:
   parameters:
     default_ee_position_m: [0.30, 0.00, 0.36]
